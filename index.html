@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>R.S.Infotech Dashboard 2025-2026</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-auth-compat.js"></script>
+<style>
+  :root{
+    --bg: #f5f2ee;
+    --panel: #ffffff;
+    --panel-edge: rgba(17,17,17,0.14);
+    --ring-track: #e7e1d9;
+    --text: #161311;
+    --text-dim: #6e6358;
+    --blue: #14539a;
+    --teal: #167a51;
+    --red: #d31a14;
+    --black: #15120f;
+  }
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0; height:100%; background:var(--bg); color:var(--text);
+    font-family:'Inter',-apple-system,'Segoe UI',Roboto,Arial,sans-serif;
+  }
+  .wrap{ max-width:1320px; margin:0 auto; padding: 32px 28px 40px; }
+  header{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:28px; flex-wrap:wrap; gap:10px; }
+  h1{ font-size:24px; font-weight:700; margin:0; letter-spacing:0.2px; color:var(--black); }
+  .clock{ font-family:'JetBrains Mono',Consolas,'Cascadia Mono','Courier New',monospace; font-size:15px; color:var(--text-dim); }
+
+  .section-label{ font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:0.6px; color:var(--text-dim); margin:30px 2px 12px; }
+  .section-label:first-of-type{ margin-top:0; }
+
+  .row2{ display:grid; grid-template-columns:repeat(2, 1fr); gap:20px; }
+  @media (max-width: 700px){ .row2{ grid-template-columns:1fr; } }
+  .row3{ display:grid; grid-template-columns:repeat(3, 1fr); gap:20px; }
+  @media (max-width: 900px){ .row3{ grid-template-columns:1fr; } }
+
+  .card{
+    background:var(--panel); border:1px solid var(--panel-edge); border-radius:14px;
+    box-shadow:0 1px 3px rgba(17,17,17,0.06), 0 8px 24px rgba(17,17,17,0.04);
+    padding:22px; display:flex; flex-direction:column;
+    position:relative; overflow:hidden;
+  }
+  .card .kicker{
+    font-size:13px; letter-spacing:0.3px; text-transform:uppercase;
+    color:var(--text-dim); margin-bottom:10px; font-weight:700;
+  }
+  .stat-count{
+    font-family:'JetBrains Mono',Consolas,'Cascadia Mono','Courier New',monospace;
+    font-size:38px; font-weight:800; line-height:1; color:var(--black);
+  }
+  .stat-count.negative{ color:var(--red); }
+  .stat-sub{ font-size:12.5px; color:var(--text-dim); margin-top:8px; }
+
+  .pl-card .stat-count{ font-size:44px; }
+  .pl-breakdown{ display:flex; gap:22px; margin-top:14px; }
+  .pl-breakdown div{ font-size:13px; color:var(--text-dim); }
+  .pl-breakdown b{ display:block; font-family:'JetBrains Mono',monospace; font-size:16px; color:var(--black); font-weight:700; }
+  .review-flag{
+    margin-top:14px; padding:9px 12px; border-radius:8px; font-size:12.5px;
+    background:rgba(211,26,20,0.08); color:var(--red); border:1px solid rgba(211,26,20,0.25);
+  }
+
+  .table-card{ align-items:stretch; max-height:440px; }
+  .table-card .kicker{ margin-bottom:14px; }
+  .table-scroll{ overflow-y:auto; max-height:360px; width:100%; }
+  table.datatable{ width:100%; border-collapse:collapse; font-size:13.5px; }
+  table.datatable th{
+    text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:0.4px;
+    color:var(--text-dim); padding:6px 8px; border-bottom:2px solid var(--panel-edge);
+    position:sticky; top:0; background:var(--panel);
+  }
+  table.datatable th.num-col, table.datatable td.num-col{ text-align:right; }
+  table.datatable td{ padding:7px 8px; border-bottom:1px solid rgba(17,17,17,0.06); }
+  table.datatable tr:hover td{ background:rgba(20,83,154,0.04); }
+  .tag{ font-size:11px; font-weight:700; padding:2px 7px; border-radius:5px; text-transform:uppercase; }
+  .tag.cash_in{ background:rgba(22,122,81,0.12); color:var(--teal); }
+  .tag.cash_out{ background:rgba(211,26,20,0.10); color:var(--red); }
+  .empty-note{ font-size:13px; color:var(--text-dim); padding:18px 4px; text-align:center; }
+
+  .status-banner{
+    margin-top:22px; padding:11px 16px; border-radius:10px; font-size:13px;
+    display:none; align-items:center; gap:8px; background:rgba(211,26,20,0.08); color:var(--red);
+    border:1px solid rgba(211,26,20,0.25);
+  }
+  .status-banner.show{ display:flex; }
+  .brand-bar{ height:6px; border-radius:3px; margin-bottom:24px; background:linear-gradient(90deg, var(--blue), var(--black)); }
+  .footer-note{ margin-top:26px; font-size:12px; color:var(--text-dim); text-align:center; }
+
+  #loginScreen{ min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
+  .login-card{
+    background:var(--panel); border:1px solid var(--panel-edge); border-radius:16px;
+    box-shadow:0 1px 3px rgba(17,17,17,0.06), 0 12px 32px rgba(17,17,17,0.08);
+    padding:36px 32px; width:100%; max-width:380px;
+  }
+  .login-card h1{ font-size:22px; margin:0 0 6px; }
+  .login-card .login-sub{ font-size:13px; color:var(--text-dim); margin-bottom:24px; }
+  .login-field{ margin-bottom:16px; }
+  .login-field label{ display:block; font-size:12px; font-weight:700; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.4px; margin-bottom:6px; }
+  .login-field input{
+    width:100%; padding:11px 13px; border:1px solid var(--panel-edge); border-radius:9px;
+    font-family:'Inter',sans-serif; font-size:15px; background:var(--bg); color:var(--text);
+  }
+  .login-field input:focus{ outline:2px solid var(--blue); outline-offset:1px; }
+  .login-btn{
+    width:100%; padding:12px; border:none; border-radius:9px; background:var(--blue); color:#fff;
+    font-family:'Inter',sans-serif; font-size:15px; font-weight:700; cursor:pointer; margin-top:6px;
+  }
+  .login-btn:hover{ background:#0f3f75; }
+  .login-btn:disabled{ background:var(--ring-track); color:var(--text-dim); cursor:default; }
+  .login-error{ color:var(--red); font-size:13px; margin-top:14px; display:none; }
+  .login-error.show{ display:block; }
+  #appContent{ display:none; }
+
+  .controls-bar{
+    display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:8px;
+    padding:14px 16px; background:var(--panel); border:1px solid var(--panel-edge); border-radius:12px;
+  }
+  .ctrl-btn{
+    padding:8px 14px; border-radius:8px; border:1px solid var(--panel-edge); background:var(--bg);
+    color:var(--text); font-family:'Inter',sans-serif; font-size:13px; font-weight:600; cursor:pointer;
+  }
+  .ctrl-btn:hover{ background:var(--ring-track); }
+  .ctrl-btn.active{ background:var(--blue); color:#fff; border-color:var(--blue); }
+  .ctrl-date-input{
+    padding:7px 10px; border-radius:8px; border:1px solid var(--panel-edge); background:var(--bg);
+    color:var(--text); font-family:'Inter',sans-serif; font-size:13px;
+  }
+  .view-label{ font-size:13px; color:var(--text-dim); margin:0 2px 22px; display:flex; align-items:center; gap:8px; }
+  .view-label .live-dot{
+    width:7px; height:7px; border-radius:50%; background:var(--teal); display:inline-block;
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse{ 0%,100%{ opacity:1; } 50%{ opacity:0.3; } }
+  .logout-link{ margin-left:auto; font-size:13px; color:var(--text-dim); cursor:pointer; text-decoration:underline; }
+  .logout-link:hover{ color:var(--text); }
+</style>
+</head>
+<body>
+
+<div id="loginScreen">
+  <div class="login-card">
+    <h1>R.S.Infotech Dashboard</h1>
+    <div class="login-sub">Sign in to view today's sales, purchase, P&amp;L, cash vouchers and stock.</div>
+    <form id="loginForm">
+      <div class="login-field">
+        <label for="loginEmail">Email</label>
+        <input type="email" id="loginEmail" autocomplete="username" required>
+      </div>
+      <div class="login-field">
+        <label for="loginPassword">Password</label>
+        <input type="password" id="loginPassword" autocomplete="current-password" required>
+      </div>
+      <button type="submit" class="login-btn" id="loginBtn">Sign In</button>
+      <div class="login-error" id="loginError"></div>
+    </form>
+  </div>
+</div>
+
+<div id="appContent">
+<div class="wrap">
+  <div class="brand-bar"></div>
+  <header>
+    <h1>R.S.Infotech <span id="dateLabel"></span></h1>
+    <div class="clock" id="clock">--:--:--</div>
+  </header>
+
+  <div class="controls-bar">
+    <button class="ctrl-btn active" id="btnToday">Today</button>
+    <span style="width:1px;height:22px;background:var(--panel-edge);"></span>
+    <input type="date" class="ctrl-date-input" id="pickDate">
+    <button class="ctrl-btn" id="btnPickDate">View date</button>
+    <span class="logout-link" id="logoutLink">Log out</span>
+  </div>
+  <div class="view-label" id="viewLabel"><span class="live-dot"></span> Showing: Today (live)</div>
+
+  <div class="section-label">Sales &amp; Purchase</div>
+  <div class="row2">
+    <div class="card">
+      <div class="kicker">Daily Sales</div>
+      <div class="stat-count" id="salesTotal">₹0</div>
+      <div class="stat-sub" id="salesCount">0 vouchers</div>
+    </div>
+    <div class="card">
+      <div class="kicker">Daily Purchase</div>
+      <div class="stat-count" id="purchaseTotal">₹0</div>
+      <div class="stat-sub" id="purchaseCount">0 vouchers</div>
+    </div>
+  </div>
+
+  <div class="section-label">Profit &amp; Loss</div>
+  <div class="card pl-card">
+    <div class="kicker">Net profit / loss for the day</div>
+    <div class="stat-count" id="plAmount">₹0</div>
+    <div class="review-flag" id="plReviewFlag" style="display:none;"></div>
+  </div>
+
+  <div class="section-label">Cash &amp; Stock</div>
+  <div class="row2">
+    <div class="card table-card">
+      <div class="kicker">Cash vouchers</div>
+      <div class="table-scroll">
+        <table class="datatable" id="cashTable">
+          <thead><tr><th>Party</th><th>Type</th><th></th><th class="num-col">Amount</th></tr></thead>
+          <tbody id="cashBody"><tr><td colspan="4" class="empty-note">Waiting for first update…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card table-card">
+      <div class="kicker">Stock summary (closing)</div>
+      <div class="table-scroll">
+        <table class="datatable" id="stockTable">
+          <thead><tr><th>Item</th><th class="num-col">Qty</th><th class="num-col">Value</th></tr></thead>
+          <tbody id="stockBody"><tr><td colspan="3" class="empty-note">Waiting for first update…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="status-banner" id="statusBanner"></div>
+  <div class="footer-note" id="updatedNote">Waiting for first update…</div>
+</div>
+</div>
+
+<script>
+// Paste the firebaseConfig values from Firebase Console -> Project settings
+// -> Your apps -> Web app, once the project has been created.
+const firebaseConfig = {
+  apiKey: "REPLACE_ME",
+  authDomain: "REPLACE_ME.firebaseapp.com",
+  projectId: "REPLACE_ME",
+  storageBucket: "REPLACE_ME.firebasestorage.app",
+  messagingSenderId: "REPLACE_ME",
+  appId: "REPLACE_ME",
+};
+
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+const auth = firebase.auth();
+
+const COLLECTION = 'daily_reports';
+
+function fmtINR(n){
+  n = Math.round(n || 0);
+  return (n < 0 ? '-₹' : '₹') + Math.abs(n).toLocaleString('en-IN');
+}
+
+function escapeHtml(s){
+  const d = document.createElement('div');
+  d.textContent = s ?? '';
+  return d.innerHTML;
+}
+
+function toISO(d){
+  // Build from local calendar components -- d.toISOString() shifts the date
+  // backward for timezones ahead of UTC (like IST), which would show
+  // yesterday's report as "today" in the evening.
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+function todayISO(){ return toISO(new Date()); }
+function isoToLabel(iso){
+  const d = new Date(iso + 'T00:00:00');
+  return d.toLocaleDateString(undefined, { weekday:'long', month:'short', day:'numeric', year:'numeric' });
+}
+
+function setClock(){
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString();
+}
+setClock();
+setInterval(setClock, 1000);
+
+function renderCashTable(rows){
+  const body = document.getElementById('cashBody');
+  if (!rows || rows.length === 0){
+    body.innerHTML = '<tr><td colspan="4" class="empty-note">No cash vouchers for this day.</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map(v => `
+    <tr>
+      <td>${escapeHtml(v.party || '(no party)')}</td>
+      <td>${escapeHtml(v.type || '')}</td>
+      <td><span class="tag ${v.direction === 'cash_in' ? 'cash_in' : 'cash_out'}">${v.direction === 'cash_in' ? 'In' : 'Out'}</span></td>
+      <td class="num-col">${fmtINR(v.amount)}</td>
+    </tr>`).join('');
+}
+
+function renderStockTable(items){
+  const body = document.getElementById('stockBody');
+  if (!items || items.length === 0){
+    body.innerHTML = '<tr><td colspan="3" class="empty-note">No stock data for this day.</td></tr>';
+    return;
+  }
+  body.innerHTML = items.map(it => {
+    const qty = (it.qty % 1 === 0) ? it.qty : it.qty.toFixed(2);
+    return `<tr><td>${escapeHtml(it.name)}</td><td class="num-col">${qty}${it.unit ? ' ' + escapeHtml(it.unit) : ''}</td><td class="num-col">${fmtINR(it.value)}</td></tr>`;
+  }).join('');
+}
+
+function applyData(data){
+  const sales = data.sales || { total: 0, count: 0 };
+  const purchase = data.purchase || { total: 0, count: 0 };
+  const pl = data.profit_and_loss || { needs_review: true, net_profit_loss: null };
+  const cash = data.cash_vouchers || { vouchers: [] };
+  const stock = data.stock_summary || { items: [] };
+
+  document.getElementById('salesTotal').textContent = fmtINR(sales.total);
+  document.getElementById('salesCount').textContent = sales.count + ' voucher' + (sales.count === 1 ? '' : 's');
+  document.getElementById('purchaseTotal').textContent = fmtINR(purchase.total);
+  document.getElementById('purchaseCount').textContent = purchase.count + ' voucher' + (purchase.count === 1 ? '' : 's');
+
+  const plEl = document.getElementById('plAmount');
+  const flagEl = document.getElementById('plReviewFlag');
+  if (pl.needs_review || pl.net_profit_loss === null){
+    plEl.textContent = '—';
+    plEl.classList.remove('negative');
+    flagEl.style.display = 'block';
+    flagEl.textContent = 'Could not read a clear P&L figure from Tally for this day — check the sync script log. (' + (pl.reason || 'unknown reason') + ')';
+  } else {
+    plEl.textContent = fmtINR(pl.net_profit_loss);
+    plEl.classList.toggle('negative', pl.net_profit_loss < 0);
+    flagEl.style.display = 'none';
+  }
+
+  renderCashTable(cash.vouchers);
+  renderStockTable(stock.items);
+}
+
+function clearData(){
+  applyData({});
+}
+
+function showStatus(message){
+  const banner = document.getElementById('statusBanner');
+  if (message){
+    banner.classList.add('show');
+    banner.textContent = message;
+  } else {
+    banner.classList.remove('show');
+  }
+}
+
+let liveUnsubscribe = null;
+function detachLiveListener(){
+  if (liveUnsubscribe){ liveUnsubscribe(); liveUnsubscribe = null; }
+}
+
+function setActiveButton(id){
+  document.querySelectorAll('.ctrl-btn').forEach(b => b.classList.remove('active'));
+  if (id) document.getElementById(id)?.classList.add('active');
+}
+
+function loadDay(dateIso, live){
+  detachLiveListener();
+  document.getElementById('dateLabel').textContent = isoToLabel(dateIso);
+
+  const handleDoc = (doc, isLive) => {
+    if (doc.exists){
+      applyData(doc.data());
+      showStatus(null);
+      document.getElementById('updatedNote').textContent =
+        (isLive ? 'Last synced ' : 'Saved report for ' + dateIso) +
+        (isLive ? new Date().toLocaleTimeString() + ' · live' : '');
+    } else {
+      clearData();
+      showStatus('No data synced for ' + dateIso + ' yet — check the sync script ran on the shop PC.');
+    }
+  };
+
+  if (live){
+    document.getElementById('viewLabel').innerHTML = '<span class="live-dot"></span> Showing: Today (live)';
+    liveUnsubscribe = db.collection(COLLECTION).doc(dateIso).onSnapshot(
+      (doc) => handleDoc(doc, true),
+      (error) => { showStatus('Could not reach Firestore — check your internet connection.'); console.error(error); }
+    );
+  } else {
+    document.getElementById('viewLabel').textContent = 'Showing: ' + isoToLabel(dateIso);
+    db.collection(COLLECTION).doc(dateIso).get()
+      .then((doc) => handleDoc(doc, false))
+      .catch((e) => { showStatus('Could not reach Firestore — check your internet connection.'); console.error(e); });
+  }
+}
+
+document.getElementById('btnToday').addEventListener('click', () => {
+  setActiveButton('btnToday');
+  document.getElementById('pickDate').value = todayISO();
+  loadDay(todayISO(), true);
+});
+
+document.getElementById('btnPickDate').addEventListener('click', () => {
+  const d = document.getElementById('pickDate').value;
+  if (!d){ alert('Pick a date first.'); return; }
+  setActiveButton(null);
+  loadDay(d, false);
+});
+
+document.getElementById('loginForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const email = document.getElementById('loginEmail').value.trim();
+  const password = document.getElementById('loginPassword').value;
+  const btn = document.getElementById('loginBtn');
+  const errEl = document.getElementById('loginError');
+  errEl.classList.remove('show');
+  btn.disabled = true;
+  btn.textContent = 'Signing in…';
+  auth.signInWithEmailAndPassword(email, password)
+    .catch((error) => {
+      errEl.textContent = 'Sign-in failed: ' + (error.message || 'check your email and password.');
+      errEl.classList.add('show');
+    })
+    .finally(() => {
+      btn.disabled = false;
+      btn.textContent = 'Sign In';
+    });
+});
+
+document.getElementById('logoutLink').addEventListener('click', () => {
+  detachLiveListener();
+  auth.signOut();
+});
+
+auth.onAuthStateChanged((user) => {
+  if (user){
+    document.getElementById('loginScreen').style.display = 'none';
+    document.getElementById('appContent').style.display = 'block';
+    document.getElementById('pickDate').value = todayISO();
+    loadDay(todayISO(), true);
+  } else {
+    document.getElementById('loginScreen').style.display = 'flex';
+    document.getElementById('appContent').style.display = 'none';
+    detachLiveListener();
+  }
+});
+</script>
+</body>
+</html>

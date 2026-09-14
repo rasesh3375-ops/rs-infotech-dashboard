@@ -1,0 +1,4 @@
+tally-sync/service-account.json
+tally-sync/raw/
+__pycache__/
+*.pyc
