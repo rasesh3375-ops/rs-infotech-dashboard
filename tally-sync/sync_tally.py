@@ -30,6 +30,7 @@ import logging
 import os
 import re
 import sys
+import time
 import xml.etree.ElementTree as ET
 
 import requests
@@ -115,22 +116,40 @@ def _sanitize_xml_text(raw_bytes):
     return text
 
 
-def _post_xml(xml_request, dump_raw_dir=None, dump_name=None, timeout=None):
+def _post_xml(xml_request, dump_raw_dir=None, dump_name=None, timeout=None, max_attempts=3):
+    """Tally's HTTP/XML gateway has been observed to stall for minutes with
+    no apparent cause -- CPU, memory and disk all idle -- and then answer
+    the very same request in seconds a moment later. That is a transient
+    hiccup in Tally itself, not a reason to give up, so retry network-level
+    failures (timeout / connection refused) a couple of times with a short
+    pause before actually raising. A malformed response or a real error
+    from Tally is NOT retried -- those are deterministic and retrying just
+    wastes the same wait again.
+    """
     timeout = timeout or REQUEST_TIMEOUT_SECONDS
-    try:
-        resp = requests.post(
-            TALLY_URL,
-            data=xml_request.encode("utf-8"),
-            headers={"Content-Type": "text/xml; charset=utf-8"},
-            timeout=timeout,
-        )
-    except requests.exceptions.ConnectionError as e:
-        raise TallyError(
-            f"Could not reach Tally at {TALLY_URL}. Is Tally Prime open, the company "
-            f"loaded, and the HTTP/XML gateway enabled (F1 > Settings > Connectivity)? ({e})"
-        )
-    except requests.exceptions.Timeout:
-        raise TallyError(f"Tally did not respond within {timeout}s.")
+    resp = None
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = requests.post(
+                TALLY_URL,
+                data=xml_request.encode("utf-8"),
+                headers={"Content-Type": "text/xml; charset=utf-8"},
+                timeout=timeout,
+            )
+            break
+        except requests.exceptions.ConnectionError as e:
+            last_error = TallyError(
+                f"Could not reach Tally at {TALLY_URL}. Is Tally Prime open, the company "
+                f"loaded, and the HTTP/XML gateway enabled (F1 > Settings > Connectivity)? ({e})"
+            )
+        except requests.exceptions.Timeout:
+            last_error = TallyError(f"Tally did not respond within {timeout}s.")
+        if attempt < max_attempts:
+            log.warning("Attempt %d/%d failed (%s) -- retrying in 5s...", attempt, max_attempts, last_error)
+            time.sleep(5)
+    if resp is None:
+        raise last_error
 
     if resp.status_code != 200:
         raise TallyError(f"Tally returned HTTP {resp.status_code}: {resp.text[:300]}")
