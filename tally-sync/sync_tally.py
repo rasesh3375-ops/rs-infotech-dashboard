@@ -52,7 +52,7 @@ SERVICE_ACCOUNT_PATH = os.path.join(os.path.dirname(__file__), "service-account.
 
 FIRESTORE_COLLECTION = "daily_reports"
 
-REQUEST_TIMEOUT_SECONDS = 45
+REQUEST_TIMEOUT_SECONDS = 120
 
 log = logging.getLogger("tally_sync")
 
