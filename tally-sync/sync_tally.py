@@ -54,6 +54,11 @@ FIRESTORE_COLLECTION = "daily_reports"
 
 REQUEST_TIMEOUT_SECONDS = 120
 
+# Computing closing stock balances/values as of a date is consistently the
+# slowest thing Tally does here -- it was still measured under this on real
+# company data, while every other report finished in well under 30s.
+STOCK_SUMMARY_TIMEOUT_SECONDS = 600
+
 log = logging.getLogger("tally_sync")
 
 
@@ -110,13 +115,14 @@ def _sanitize_xml_text(raw_bytes):
     return text
 
 
-def _post_xml(xml_request, dump_raw_dir=None, dump_name=None):
+def _post_xml(xml_request, dump_raw_dir=None, dump_name=None, timeout=None):
+    timeout = timeout or REQUEST_TIMEOUT_SECONDS
     try:
         resp = requests.post(
             TALLY_URL,
             data=xml_request.encode("utf-8"),
             headers={"Content-Type": "text/xml; charset=utf-8"},
-            timeout=REQUEST_TIMEOUT_SECONDS,
+            timeout=timeout,
         )
     except requests.exceptions.ConnectionError as e:
         raise TallyError(
@@ -124,7 +130,7 @@ def _post_xml(xml_request, dump_raw_dir=None, dump_name=None):
             f"loaded, and the HTTP/XML gateway enabled (F1 > Settings > Connectivity)? ({e})"
         )
     except requests.exceptions.Timeout:
-        raise TallyError(f"Tally did not respond within {REQUEST_TIMEOUT_SECONDS}s.")
+        raise TallyError(f"Tally did not respond within {timeout}s.")
 
     if resp.status_code != 200:
         raise TallyError(f"Tally returned HTTP {resp.status_code}: {resp.text[:300]}")
@@ -326,7 +332,7 @@ def fetch_stock_summary(date, dump_raw_dir=None):
         date,
         date,
     )
-    root = _post_xml(xml_req, dump_raw_dir, "stock_summary")
+    root = _post_xml(xml_req, dump_raw_dir, "stock_summary", timeout=STOCK_SUMMARY_TIMEOUT_SECONDS)
 
     items = []
     for it in root.iter("STOCKITEM"):
