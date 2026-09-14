@@ -91,6 +91,22 @@ def _sanitize_xml_text(raw_bytes):
             return m.group(0)
         return ""
     text = re.sub(r"&#x(?P<hex>[0-9a-fA-F]+);|&#(?P<dec>\d+);", _drop_invalid_char_ref, text)
+    # Tally emits tag/attribute names with a bare colon in them (seen in
+    # multi-language name variants, e.g. "<LANGUAGENAME:1033>") which expat
+    # reads as an XML namespace prefix that was never declared, failing with
+    # "unbound prefix". Tally means nothing by the colon -- it's not really
+    # namespacing anything -- so replace it with an underscore, but only
+    # inside tag/attribute name position (within "<...>" delimiters, and
+    # never inside a quoted attribute value), so a colon that's legitimately
+    # part of a ledger name, time value, etc. in element *content* is left
+    # completely alone.
+    def _fix_unbound_prefixes(tag_match):
+        tag = tag_match.group(0)
+        parts = re.split(r'("[^"]*"|\'[^\']*\')', tag)
+        for i in range(0, len(parts), 2):
+            parts[i] = re.sub(r"([A-Za-z_][\w.]*):(?=[\w.])", r"\1_", parts[i])
+        return "".join(parts)
+    text = re.sub(r"<[^>]+>", _fix_unbound_prefixes, text)
     return text
 
 
