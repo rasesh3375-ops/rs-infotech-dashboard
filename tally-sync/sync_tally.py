@@ -43,7 +43,7 @@ TALLY_URL = "http://localhost:9000"
 
 # Must match the company name exactly as it appears in Tally Prime's company
 # list (Gateway of Tally, top left). Case and spacing matter to Tally.
-TALLY_COMPANY_NAME = "R.S.Infotech Dashboard 2025-2026"
+TALLY_COMPANY_NAME = "R. S. Infotech"
 
 # Path to the Firebase service-account JSON key you download from
 # Firebase Console -> Project settings -> Service accounts -> Generate new
