@@ -78,6 +78,19 @@ def _sanitize_xml_text(raw_bytes):
     # Valid XML 1.0 chars: #x9 | #xA | #xD | [#x20-#xD7FF] | ...
     text = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F]", "", text)
     text = re.sub(r"&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+;)", "&amp;", text)
+    # Tally also emits *escaped* numeric character references (e.g. "&#4;")
+    # for the same internal separator bytes -- those pass the raw-byte strip
+    # above untouched (they're plain ASCII "&#4;") but still point at a
+    # codepoint XML 1.0 forbids, so expat rejects them at parse time with
+    # "reference to invalid character number". Drop only the ones that are
+    # actually invalid; leave legitimate references (e.g. "&#8377;" for a
+    # currency symbol) alone.
+    def _drop_invalid_char_ref(m):
+        codepoint = int(m.group("hex"), 16) if m.group("hex") is not None else int(m.group("dec"))
+        if codepoint in (0x9, 0xA, 0xD) or 0x20 <= codepoint <= 0xD7FF or 0xE000 <= codepoint <= 0xFFFD or 0x10000 <= codepoint <= 0x10FFFF:
+            return m.group(0)
+        return ""
+    text = re.sub(r"&#x(?P<hex>[0-9a-fA-F]+);|&#(?P<dec>\d+);", _drop_invalid_char_ref, text)
     return text
 
 
