@@ -68,6 +68,15 @@
   }
   .voucher-detail-panel.open{ display:block; }
 
+  .pl-period-row{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px; }
+  .pl-period-btn{
+    padding:6px 12px; border-radius:7px; border:1px solid var(--panel-edge); background:var(--bg);
+    color:var(--text); font-family:'Inter',sans-serif; font-size:12.5px; font-weight:600; cursor:pointer;
+  }
+  .pl-period-btn:hover{ background:var(--ring-track); }
+  .pl-period-btn.active{ background:var(--blue); color:#fff; border-color:var(--blue); }
+  .pl-range-label{ font-size:12.5px; color:var(--text-dim); margin-top:8px; }
+
   .pl-card .stat-count{ font-size:44px; }
   .pl-breakdown{ display:flex; gap:22px; margin-top:14px; }
   .pl-breakdown div{ font-size:13px; color:var(--text-dim); }
@@ -220,8 +229,17 @@
 
   <div class="section-label">Profit &amp; Loss</div>
   <div class="card pl-card">
-    <div class="kicker">Net profit / loss for the day</div>
+    <div class="kicker">Net profit / loss</div>
+    <div class="pl-period-row" id="plPeriodRow">
+      <button class="pl-period-btn active" data-period="daily">Daily</button>
+      <button class="pl-period-btn" data-period="weekly">Weekly</button>
+      <button class="pl-period-btn" data-period="monthly">Monthly</button>
+      <button class="pl-period-btn" data-period="quarterly">Quarterly</button>
+      <button class="pl-period-btn" data-period="half_yearly">Half-Yearly</button>
+      <button class="pl-period-btn" data-period="yearly">Yearly</button>
+    </div>
     <div class="stat-count" id="plAmount">₹0</div>
+    <div class="pl-range-label" id="plRangeLabel"></div>
     <div class="review-flag" id="plReviewFlag" style="display:none;"></div>
   </div>
 
@@ -321,9 +339,9 @@ function renderVoucherDetailTable(bodyId, rows){
 }
 
 function applyData(data){
+  lastDailyData = data;
   const sales = data.sales || { total: 0, count: 0, vouchers: [] };
   const purchase = data.purchase || { total: 0, count: 0, vouchers: [] };
-  const pl = data.profit_and_loss || { needs_review: true, net_profit_loss: null };
   const cash = data.cash_vouchers || { vouchers: [] };
 
   document.getElementById('salesTotal').textContent = fmtINR(sales.total);
@@ -333,21 +351,150 @@ function applyData(data){
   renderVoucherDetailTable('salesDetailBody', sales.vouchers);
   renderVoucherDetailTable('purchaseDetailBody', purchase.vouchers);
 
-  const plEl = document.getElementById('plAmount');
-  const flagEl = document.getElementById('plReviewFlag');
-  if (pl.needs_review || pl.net_profit_loss === null){
-    plEl.textContent = '—';
-    plEl.classList.remove('negative');
-    flagEl.style.display = 'block';
-    flagEl.textContent = 'Could not read a clear P&L figure from Tally for this day — check the sync script log. (' + (pl.reason || 'unknown reason') + ')';
-  } else {
-    plEl.textContent = fmtINR(pl.net_profit_loss);
-    plEl.classList.toggle('negative', pl.net_profit_loss < 0);
-    flagEl.style.display = 'none';
-  }
+  loadPlPeriod('daily');
 
   renderCashTable(cash.vouchers);
 }
+
+// ---------------------------------------------------------------------
+// P&L period aggregation (Daily / Weekly / Monthly / Quarterly / Half-Yearly / Yearly)
+// ---------------------------------------------------------------------
+let currentAnchorDateIso = todayISO();
+let lastDailyData = null;
+let currentPlPeriod = 'daily';
+
+function fyStartDateObj(d){
+  // Indian financial year: 1 April - 31 March.
+  const y = d.getFullYear();
+  const m = d.getMonth(); // 0-indexed, April = 3
+  const fyYear = m >= 3 ? y : y - 1;
+  return new Date(fyYear, 3, 1);
+}
+function addMonthsObj(d, n){
+  return new Date(d.getFullYear(), d.getMonth() + n, d.getDate());
+}
+function dayBefore(d){
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1);
+}
+
+function plPeriodRange(period, anchorIso){
+  const anchor = new Date(anchorIso + 'T00:00:00');
+  if (period === 'weekly'){
+    const day = anchor.getDay(); // 0=Sun..6=Sat
+    const diffToMonday = day === 0 ? 6 : day - 1;
+    const start = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() - diffToMonday);
+    const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6);
+    return [start, end];
+  }
+  if (period === 'monthly'){
+    const start = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+    const end = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0);
+    return [start, end];
+  }
+  const fyStart = fyStartDateObj(anchor);
+  const monthsSinceFyStart = (anchor.getFullYear() - fyStart.getFullYear()) * 12 + (anchor.getMonth() - fyStart.getMonth());
+  if (period === 'quarterly'){
+    const qIdx = Math.floor(monthsSinceFyStart / 3);
+    const start = addMonthsObj(fyStart, qIdx * 3);
+    const end = dayBefore(addMonthsObj(fyStart, qIdx * 3 + 3));
+    return [start, end];
+  }
+  if (period === 'half_yearly'){
+    const hIdx = Math.floor(monthsSinceFyStart / 6);
+    const start = addMonthsObj(fyStart, hIdx * 6);
+    const end = dayBefore(addMonthsObj(fyStart, hIdx * 6 + 6));
+    return [start, end];
+  }
+  if (period === 'yearly'){
+    const end = dayBefore(addMonthsObj(fyStart, 12));
+    return [fyStart, end];
+  }
+  return [anchor, anchor]; // daily, or unrecognised
+}
+
+function dateRangeIsoArray(start, end){
+  const out = [];
+  let cur = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const endTime = new Date(end.getFullYear(), end.getMonth(), end.getDate()).getTime();
+  let guard = 0;
+  while (cur.getTime() <= endTime && guard < 3000){
+    out.push(toISO(cur));
+    cur = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() + 1);
+    guard++;
+  }
+  return out;
+}
+
+const PL_PERIOD_LABELS = {
+  daily: 'day', weekly: 'week', monthly: 'month',
+  quarterly: 'quarter', half_yearly: 'half-year', yearly: 'financial year',
+};
+
+function renderPlAmount(net, needsReview, reasonText){
+  const plEl = document.getElementById('plAmount');
+  const flagEl = document.getElementById('plReviewFlag');
+  if (needsReview || net === null){
+    plEl.textContent = '—';
+    plEl.classList.remove('negative');
+    flagEl.style.display = 'block';
+    flagEl.textContent = reasonText;
+  } else {
+    plEl.textContent = fmtINR(net);
+    plEl.classList.toggle('negative', net < 0);
+    flagEl.style.display = 'none';
+  }
+}
+
+async function loadPlPeriod(period){
+  currentPlPeriod = period;
+  document.querySelectorAll('.pl-period-btn').forEach(b => b.classList.toggle('active', b.dataset.period === period));
+  const rangeLabelEl = document.getElementById('plRangeLabel');
+
+  if (period === 'daily'){
+    const pl = (lastDailyData && lastDailyData.profit_and_loss) || { needs_review: true, net_profit_loss: null };
+    renderPlAmount(pl.net_profit_loss, pl.needs_review || pl.net_profit_loss === null,
+      'Could not read a clear P&L figure from Tally for this day — check the sync script log. (' + (pl.reason || 'unknown reason') + ')');
+    rangeLabelEl.textContent = isoToLabel(currentAnchorDateIso);
+    return;
+  }
+
+  const [start, end] = plPeriodRange(period, currentAnchorDateIso);
+  const dates = dateRangeIsoArray(start, end);
+  rangeLabelEl.textContent = 'Loading this ' + PL_PERIOD_LABELS[period] + '…';
+
+  try {
+    const snaps = await Promise.all(dates.map(d => db.collection(COLLECTION).doc(d).get()));
+    let income = 0, expense = 0, daysWithData = 0, daysReview = 0;
+    for (const s of snaps){
+      if (!s.exists) continue;
+      const pl = s.data().profit_and_loss;
+      if (!pl) continue;
+      if (pl.needs_review || pl.net_profit_loss === null){ daysReview++; continue; }
+      income += pl.total_income || 0;
+      expense += pl.total_expense || 0;
+      daysWithData++;
+    }
+    const startIso = toISO(start), endIso = toISO(end);
+    const rangeText = startIso === endIso ? isoToLabel(startIso) : (isoToLabel(startIso) + ' – ' + isoToLabel(endIso));
+    rangeLabelEl.textContent = rangeText + ' · ' + daysWithData + '/' + dates.length + ' day(s) synced' +
+      (daysReview ? ', ' + daysReview + ' needing review excluded' : '');
+
+    if (daysWithData === 0){
+      renderPlAmount(null, true, 'No synced figures found for this ' + PL_PERIOD_LABELS[period] + ' yet.');
+    } else {
+      renderPlAmount(income - expense, false, '');
+    }
+  } catch (e){
+    rangeLabelEl.textContent = 'Could not load this ' + PL_PERIOD_LABELS[period] + ' — check your internet connection.';
+    console.error(e);
+  }
+}
+
+document.getElementById('plPeriodRow').addEventListener('click', (e) => {
+  const btn = e.target.closest('.pl-period-btn');
+  if (!btn) return;
+  loadPlPeriod(btn.dataset.period);
+});
 
 function clearData(){
   applyData({});
@@ -375,6 +522,7 @@ function setActiveButton(id){
 
 function loadDay(dateIso, live){
   detachLiveListener();
+  currentAnchorDateIso = dateIso;
   document.getElementById('dateLabel').textContent = isoToLabel(dateIso);
 
   const handleDoc = (doc, isLive) => {
