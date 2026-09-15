@@ -290,72 +290,76 @@ def fetch_cash_ledger_names(date, dump_raw_dir=None):
     return names
 
 
-def fetch_daily_sales(date, dump_raw_dir=None):
-    return _fetch_vouchers_by_class(date, "IsSales", "$$IsSales:$VoucherTypeName", dump_raw_dir, "sales")
+def fetch_voucher_type_parents(date, dump_raw_dir=None):
+    """Maps each Voucher Type's name to its base type (Sales, Purchase,
+    Payment, Receipt, Journal, ...), read directly off Tally's own
+    classification -- the same PARENT-lookup pattern already used above
+    for Ledger -> Cash-in-Hand. This exists because the documented-looking
+    $$IsSales/$$IsPurchase TDL system formulae were tried first and
+    returned zero matches even for a voucher type ("Tax Invoice") that
+    Tally's own Voucher Type Alteration screen confirmed as "Select type
+    of voucher: Sales" -- so this reads Tally's actual classification
+    directly instead of trusting an unverified function.
+    """
+    xml_req = _collection_request("VchTypeList", "VoucherType", ["NAME", "PARENT"], date, date)
+    root = _post_xml(xml_req, dump_raw_dir, "voucher_types")
+    parents = {}
+    for vt in _collection_records(root, "VOUCHERTYPE"):
+        name = (vt.get("NAME") or _text(vt, "NAME") or "").strip().lower()
+        parent = _text(vt, "PARENT").strip().lower()
+        if name:
+            parents[name] = parent
+    return parents
 
 
-def fetch_daily_purchase(date, dump_raw_dir=None):
-    return _fetch_vouchers_by_class(date, "IsPurchase", "$$IsPurchase:$VoucherTypeName", dump_raw_dir, "purchase")
-
-
-def _fetch_vouchers_by_class(date, filter_name, formula_expr, dump_raw_dir, dump_prefix):
+def fetch_vouchers_for_date(date, dump_raw_dir=None):
+    """Every voucher posted on the given date, unfiltered by class -- the
+    sales, purchase and cash-voucher reports are all derived from this one
+    fetch (see _filter_by_class and _cash_vouchers_from below) instead of
+    each making its own separate request against Tally.
+    """
     xml_req = _collection_request(
         "VchList",
-        "Voucher",
-        ["DATE", "VOUCHERNUMBER", "PARTYLEDGERNAME", "VOUCHERTYPENAME",
-         "ALLLEDGERENTRIES.LIST"],
-        date,
-        date,
-        formulae={filter_name: formula_expr},
-    )
-    root = _post_xml(xml_req, dump_raw_dir, dump_prefix)
-
-    vouchers = []
-    total = 0.0
-    for v in _collection_records(root, "VOUCHER"):
-        party = _text(v, "PARTYLEDGERNAME")
-        vch_no = _text(v, "VOUCHERNUMBER")
-        vch_type = _text(v, "VOUCHERTYPENAME")
-        amount = None
-        for entry in v.findall(".//ALLLEDGERENTRIES.LIST"):
-            is_party = _text(entry, "ISPARTYLEDGER").lower() == "yes"
-            if is_party:
-                amount = abs(_num(entry, "AMOUNT"))
-                break
-        if amount is None:
-            # No entry was flagged as the party ledger -- fall back to the
-            # single largest-magnitude entry and flag it for a human to
-            # sanity check, rather than silently guessing.
-            amounts = [abs(_num(entry, "AMOUNT")) for entry in v.findall(".//ALLLEDGERENTRIES.LIST")]
-            amount = max(amounts) if amounts else 0.0
-        vouchers.append({
-            "voucher_no": vch_no,
-            "party": party,
-            "type": vch_type,
-            "amount": round(amount, 2),
-        })
-        total += amount
-
-    return {"total": round(total, 2), "count": len(vouchers), "vouchers": vouchers}
-
-
-def fetch_cash_vouchers(date, dump_raw_dir=None):
-    cash_ledgers = fetch_cash_ledger_names(date, dump_raw_dir)
-    if not cash_ledgers:
-        log.warning("No ledger found under 'Cash-in-Hand' -- cash voucher list will be empty. "
-                    "Check the group name matches your Tally chart of accounts.")
-
-    xml_req = _collection_request(
-        "CashVchList",
         "Voucher",
         ["DATE", "VOUCHERNUMBER", "PARTYLEDGERNAME", "VOUCHERTYPENAME", "ALLLEDGERENTRIES.LIST"],
         date,
         date,
     )
-    root = _post_xml(xml_req, dump_raw_dir, "cash_vouchers")
+    root = _post_xml(xml_req, dump_raw_dir, "vouchers")
+    return _collection_records(root, "VOUCHER")
 
-    vouchers = []
-    for v in _collection_records(root, "VOUCHER"):
+
+def _voucher_amount(v):
+    for entry in v.findall(".//ALLLEDGERENTRIES.LIST"):
+        if _text(entry, "ISPARTYLEDGER").lower() == "yes":
+            return abs(_num(entry, "AMOUNT"))
+    # No entry was flagged as the party ledger -- fall back to the single
+    # largest-magnitude entry rather than silently guessing zero.
+    amounts = [abs(_num(entry, "AMOUNT")) for entry in v.findall(".//ALLLEDGERENTRIES.LIST")]
+    return max(amounts) if amounts else 0.0
+
+
+def _filter_by_class(vouchers, type_parents, wanted_parent):
+    result = []
+    total = 0.0
+    for v in vouchers:
+        vch_type = _text(v, "VOUCHERTYPENAME")
+        if type_parents.get(vch_type.strip().lower()) != wanted_parent:
+            continue
+        amount = _voucher_amount(v)
+        result.append({
+            "voucher_no": _text(v, "VOUCHERNUMBER"),
+            "party": _text(v, "PARTYLEDGERNAME"),
+            "type": vch_type,
+            "amount": round(amount, 2),
+        })
+        total += amount
+    return {"total": round(total, 2), "count": len(result), "vouchers": result}
+
+
+def _cash_vouchers_from(vouchers, cash_ledgers):
+    result = []
+    for v in vouchers:
         cash_entry = None
         for entry in v.findall(".//ALLLEDGERENTRIES.LIST"):
             ledger_name = (entry.get("NAME") or _text(entry, "LEDGERNAME") or "").strip()
@@ -365,15 +369,14 @@ def fetch_cash_vouchers(date, dump_raw_dir=None):
         if cash_entry is None:
             continue
         is_debit = _text(cash_entry, "ISDEEMEDPOSITIVE").lower() == "yes"
-        vouchers.append({
+        result.append({
             "voucher_no": _text(v, "VOUCHERNUMBER"),
             "party": _text(v, "PARTYLEDGERNAME"),
             "type": _text(v, "VOUCHERTYPENAME"),
             "direction": "cash_in" if is_debit else "cash_out",
             "amount": round(abs(_num(cash_entry, "AMOUNT")), 2),
         })
-
-    return {"count": len(vouchers), "vouchers": vouchers}
+    return {"count": len(result), "vouchers": result}
 
 
 def fetch_profit_and_loss(date, dump_raw_dir=None):
@@ -482,13 +485,20 @@ def run(date, dry_run=False, dump_raw_dir=None):
     date_iso = date.strftime("%Y-%m-%d")
     log.info("Syncing %s for %s", TALLY_COMPANY_NAME, date_iso)
 
+    voucher_type_parents = fetch_voucher_type_parents(date, dump_raw_dir)
+    cash_ledgers = fetch_cash_ledger_names(date, dump_raw_dir)
+    if not cash_ledgers:
+        log.warning("No ledger found under 'Cash-in-Hand' -- cash voucher list will be empty. "
+                    "Check the group name matches your Tally chart of accounts.")
+    vouchers = fetch_vouchers_for_date(date, dump_raw_dir)
+
     payload = {
         "date": date_iso,
         "synced_at": datetime.datetime.now().isoformat(),
-        "sales": fetch_daily_sales(date, dump_raw_dir),
-        "purchase": fetch_daily_purchase(date, dump_raw_dir),
+        "sales": _filter_by_class(vouchers, voucher_type_parents, "sales"),
+        "purchase": _filter_by_class(vouchers, voucher_type_parents, "purchase"),
         "profit_and_loss": fetch_profit_and_loss(date, dump_raw_dir),
-        "cash_vouchers": fetch_cash_vouchers(date, dump_raw_dir),
+        "cash_vouchers": _cash_vouchers_from(vouchers, cash_ledgers),
     }
 
     log.info(
