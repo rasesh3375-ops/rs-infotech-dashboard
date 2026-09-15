@@ -218,7 +218,7 @@
       <div class="tap-hint">Tap for customer-wise detail</div>
       <div class="voucher-detail-panel" id="salesDetail">
         <table class="datatable">
-          <thead><tr><th>Party</th><th>Type</th><th class="num-col">Amount</th></tr></thead>
+          <thead><tr><th>Party</th><th>Description</th><th>Type</th><th class="num-col">Amount</th></tr></thead>
           <tbody id="salesDetailBody"></tbody>
         </table>
       </div>
@@ -230,7 +230,7 @@
       <div class="tap-hint">Tap for party-wise detail</div>
       <div class="voucher-detail-panel" id="purchaseDetail">
         <table class="datatable">
-          <thead><tr><th>Party</th><th>Type</th><th class="num-col">Amount</th></tr></thead>
+          <thead><tr><th>Party</th><th>Description</th><th>Type</th><th class="num-col">Amount</th></tr></thead>
           <tbody id="purchaseDetailBody"></tbody>
         </table>
       </div>
@@ -258,8 +258,19 @@
     <div class="kicker">Cash vouchers</div>
     <div class="table-scroll">
       <table class="datatable" id="cashTable">
-        <thead><tr><th>Party</th><th>Type</th><th></th><th class="num-col">Amount</th></tr></thead>
-        <tbody id="cashBody"><tr><td colspan="4" class="empty-note">Waiting for first update…</td></tr></tbody>
+        <thead><tr><th>Party</th><th>Description</th><th>Type</th><th></th><th class="num-col">Amount</th></tr></thead>
+        <tbody id="cashBody"><tr><td colspan="5" class="empty-note">Waiting for first update…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section-label">Bank Transactions</div>
+  <div class="card table-card">
+    <div class="kicker">Bank transactions</div>
+    <div class="table-scroll">
+      <table class="datatable" id="bankTable">
+        <thead><tr><th>Party</th><th>Description</th><th>Type</th><th></th><th class="num-col">Amount</th></tr></thead>
+        <tbody id="bankBody"><tr><td colspan="5" class="empty-note">Waiting for first update…</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -319,30 +330,35 @@ function setClock(){
 setClock();
 setInterval(setClock, 1000);
 
-function renderCashTable(rows){
-  const body = document.getElementById('cashBody');
+function renderMoneyTable(bodyId, rows, emptyText){
+  const body = document.getElementById(bodyId);
   if (!rows || rows.length === 0){
-    body.innerHTML = '<tr><td colspan="4" class="empty-note">No cash vouchers for this day.</td></tr>';
+    body.innerHTML = `<tr><td colspan="5" class="empty-note">${emptyText}</td></tr>`;
     return;
   }
-  body.innerHTML = rows.map(v => `
+  body.innerHTML = rows.map(v => {
+    const isIn = v.direction === 'cash_in' || v.direction === 'bank_in';
+    return `
     <tr>
       <td>${escapeHtml(v.party || '(no party)')}</td>
+      <td>${escapeHtml(v.description || '')}</td>
       <td>${escapeHtml(v.type || '')}</td>
-      <td><span class="tag ${v.direction === 'cash_in' ? 'cash_in' : 'cash_out'}">${v.direction === 'cash_in' ? 'In' : 'Out'}</span></td>
+      <td><span class="tag ${isIn ? 'cash_in' : 'cash_out'}">${isIn ? 'In' : 'Out'}</span></td>
       <td class="num-col">${fmtINR(v.amount)}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 }
 
 function renderVoucherDetailTable(bodyId, rows){
   const body = document.getElementById(bodyId);
   if (!rows || rows.length === 0){
-    body.innerHTML = '<tr><td colspan="3" class="empty-note">No vouchers for this day.</td></tr>';
+    body.innerHTML = '<tr><td colspan="4" class="empty-note">No vouchers for this day.</td></tr>';
     return;
   }
   body.innerHTML = rows.map(v => `
     <tr>
       <td>${escapeHtml(v.party || '(no party)')}</td>
+      <td>${escapeHtml(v.description || '')}</td>
       <td>${escapeHtml(v.type || '')}</td>
       <td class="num-col">${fmtINR(v.amount)}</td>
     </tr>`).join('');
@@ -353,6 +369,7 @@ function applyData(data){
   const sales = data.sales || { total: 0, count: 0, vouchers: [] };
   const purchase = data.purchase || { total: 0, count: 0, vouchers: [] };
   const cash = data.cash_vouchers || { vouchers: [] };
+  const bank = data.bank_vouchers || { vouchers: [] };
 
   document.getElementById('salesTotal').textContent = fmtINR(sales.total);
   document.getElementById('salesCount').textContent = sales.count + ' voucher' + (sales.count === 1 ? '' : 's');
@@ -363,7 +380,8 @@ function applyData(data){
 
   loadPlPeriod('daily');
 
-  renderCashTable(cash.vouchers);
+  renderMoneyTable('cashBody', cash.vouchers, 'No cash vouchers for this day.');
+  renderMoneyTable('bankBody', bank.vouchers, 'No bank transactions for this day.');
 }
 
 // ---------------------------------------------------------------------
