@@ -58,6 +58,16 @@
   .stat-count.negative{ color:var(--red); }
   .stat-sub{ font-size:12.5px; color:var(--text-dim); margin-top:8px; }
 
+  .card.expandable{ cursor:pointer; }
+  .card.expandable .tap-hint{ font-size:11px; color:var(--text-dim); margin-top:10px; }
+  .card.expandable .tap-hint::after{ content:'▾'; margin-left:5px; display:inline-block; transition:transform 0.15s ease; }
+  .card.expandable.open .tap-hint::after{ transform:rotate(180deg); }
+  .voucher-detail-panel{
+    display:none; margin-top:14px; padding-top:12px; border-top:1px solid var(--panel-edge);
+    max-height:280px; overflow-y:auto; width:100%; cursor:default;
+  }
+  .voucher-detail-panel.open{ display:block; }
+
   .pl-card .stat-count{ font-size:44px; }
   .pl-breakdown{ display:flex; gap:22px; margin-top:14px; }
   .pl-breakdown div{ font-size:13px; color:var(--text-dim); }
@@ -182,15 +192,29 @@
 
   <div class="section-label">Sales &amp; Purchase</div>
   <div class="row2">
-    <div class="card">
+    <div class="card expandable" id="salesCard">
       <div class="kicker">Daily Sales</div>
       <div class="stat-count" id="salesTotal">₹0</div>
       <div class="stat-sub" id="salesCount">0 vouchers</div>
+      <div class="tap-hint">Tap for customer-wise detail</div>
+      <div class="voucher-detail-panel" id="salesDetail">
+        <table class="datatable">
+          <thead><tr><th>Party</th><th>Type</th><th class="num-col">Amount</th></tr></thead>
+          <tbody id="salesDetailBody"></tbody>
+        </table>
+      </div>
     </div>
-    <div class="card">
+    <div class="card expandable" id="purchaseCard">
       <div class="kicker">Daily Purchase</div>
       <div class="stat-count" id="purchaseTotal">₹0</div>
       <div class="stat-sub" id="purchaseCount">0 vouchers</div>
+      <div class="tap-hint">Tap for party-wise detail</div>
+      <div class="voucher-detail-panel" id="purchaseDetail">
+        <table class="datatable">
+          <thead><tr><th>Party</th><th>Type</th><th class="num-col">Amount</th></tr></thead>
+          <tbody id="purchaseDetailBody"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -282,9 +306,23 @@ function renderCashTable(rows){
     </tr>`).join('');
 }
 
+function renderVoucherDetailTable(bodyId, rows){
+  const body = document.getElementById(bodyId);
+  if (!rows || rows.length === 0){
+    body.innerHTML = '<tr><td colspan="3" class="empty-note">No vouchers for this day.</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map(v => `
+    <tr>
+      <td>${escapeHtml(v.party || '(no party)')}</td>
+      <td>${escapeHtml(v.type || '')}</td>
+      <td class="num-col">${fmtINR(v.amount)}</td>
+    </tr>`).join('');
+}
+
 function applyData(data){
-  const sales = data.sales || { total: 0, count: 0 };
-  const purchase = data.purchase || { total: 0, count: 0 };
+  const sales = data.sales || { total: 0, count: 0, vouchers: [] };
+  const purchase = data.purchase || { total: 0, count: 0, vouchers: [] };
   const pl = data.profit_and_loss || { needs_review: true, net_profit_loss: null };
   const cash = data.cash_vouchers || { vouchers: [] };
 
@@ -292,6 +330,8 @@ function applyData(data){
   document.getElementById('salesCount').textContent = sales.count + ' voucher' + (sales.count === 1 ? '' : 's');
   document.getElementById('purchaseTotal').textContent = fmtINR(purchase.total);
   document.getElementById('purchaseCount').textContent = purchase.count + ' voucher' + (purchase.count === 1 ? '' : 's');
+  renderVoucherDetailTable('salesDetailBody', sales.vouchers);
+  renderVoucherDetailTable('purchaseDetailBody', purchase.vouchers);
 
   const plEl = document.getElementById('plAmount');
   const flagEl = document.getElementById('plReviewFlag');
@@ -363,6 +403,19 @@ function loadDay(dateIso, live){
       .catch((e) => { showStatus('Could not reach Firestore — check your internet connection.'); console.error(e); });
   }
 }
+
+function wireExpandableCard(cardId, panelId){
+  const card = document.getElementById(cardId);
+  const panel = document.getElementById(panelId);
+  card.addEventListener('click', (e) => {
+    if (panel.contains(e.target)) return; // don't toggle when interacting inside the table itself
+    const open = !panel.classList.contains('open');
+    panel.classList.toggle('open', open);
+    card.classList.toggle('open', open);
+  });
+}
+wireExpandableCard('salesCard', 'salesDetail');
+wireExpandableCard('purchaseCard', 'purchaseDetail');
 
 document.getElementById('btnToday').addEventListener('click', () => {
   setActiveButton('btnToday');
