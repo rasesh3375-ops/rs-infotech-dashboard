@@ -18,6 +18,8 @@ create the Firebase project, and schedule this script.
 Usage:
   python sync_tally.py                  # syncs today
   python sync_tally.py --date 2026-09-10
+  python sync_tally.py --backfill-from 2026-04-01              # syncs every day from then to today, in one run
+  python sync_tally.py --backfill-from 2026-04-01 --backfill-to 2026-06-30
   python sync_tally.py --dry-run         # prints what would be written, does not touch Firestore
   python sync_tally.py --verbose         # prints each Tally request/response summary
   python sync_tally.py --dump-raw-dir ./raw   # saves every raw Tally XML response (debugging)
@@ -315,28 +317,43 @@ def fetch_voucher_type_parents(date, dump_raw_dir=None):
     return parents
 
 
-def fetch_vouchers_for_date(date, dump_raw_dir=None):
-    """Every voucher posted on the given date, unfiltered by class -- the
-    sales, purchase and cash-voucher reports are all derived from this one
-    fetch (see _filter_by_class and _cash_vouchers_from below) instead of
-    each making its own separate request against Tally.
-
-    Tally's Voucher collection ignores SVFROMDATE/SVTODATE entirely, so
-    this pulls the whole period Tally is willing to return (confirmed to
-    be the whole financial year so far) and filters to the requested date
-    itself in Python, against the DATE field ("YYYYMMDD", the standard
-    Tally XML date format) every voucher record already carries.
+def _fetch_all_voucher_records(anchor_date, dump_raw_dir=None):
+    """One Tally request for every voucher it's willing to return -- empirically
+    the whole financial year, since Tally's Voucher collection ignores
+    SVFROMDATE/SVTODATE entirely. Shared by fetch_vouchers_for_date (a single
+    day) and fetch_vouchers_grouped_by_date (a backfill across many days), so
+    a backfill needs this request only once instead of once per day.
     """
     xml_req = _collection_request(
         "VchList",
         "Voucher",
         ["DATE", "VOUCHERNUMBER", "PARTYLEDGERNAME", "VOUCHERTYPENAME", "ALLLEDGERENTRIES.LIST"],
-        date,
-        date,
+        anchor_date,
+        anchor_date,
     )
     root = _post_xml(xml_req, dump_raw_dir, "vouchers")
+    return _collection_records(root, "VOUCHER")
+
+
+def fetch_vouchers_grouped_by_date(dump_raw_dir=None):
+    """Every voucher Tally has, bucketed by its own DATE field -- the
+    backfill path's single voucher fetch, reused for every day in the
+    requested range instead of fetching once per day.
+    """
+    by_date = {}
+    for v in _fetch_all_voucher_records(datetime.date.today(), dump_raw_dir):
+        by_date.setdefault(_text(v, "DATE"), []).append(v)
+    return by_date
+
+
+def fetch_vouchers_for_date(date, dump_raw_dir=None):
+    """Every voucher posted on the given date, unfiltered by class -- the
+    sales, purchase and cash-voucher reports are all derived from this one
+    fetch (see _filter_by_class and _cash_vouchers_from below) instead of
+    each making its own separate request against Tally.
+    """
     wanted = _fmt_date(date)
-    return [v for v in _collection_records(root, "VOUCHER") if _text(v, "DATE") == wanted]
+    return [v for v in _fetch_all_voucher_records(date, dump_raw_dir) if _text(v, "DATE") == wanted]
 
 
 def _voucher_amount(v):
@@ -491,6 +508,27 @@ def push_to_firestore(date_iso, payload):
 # Main
 # ---------------------------------------------------------------------------
 
+def _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, dump_raw_dir=None):
+    payload = {
+        "date": date.strftime("%Y-%m-%d"),
+        "synced_at": datetime.datetime.now().isoformat(),
+        "sales": _filter_by_class(vouchers, voucher_type_parents, "sales"),
+        "purchase": _filter_by_class(vouchers, voucher_type_parents, "purchase"),
+        "profit_and_loss": fetch_profit_and_loss(date, dump_raw_dir),
+        "cash_vouchers": _cash_vouchers_from(vouchers, cash_ledgers),
+    }
+    log.info(
+        "%s: Sales Rs.%s (%d vch) | Purchase Rs.%s (%d vch) | P&L %s | Cash vouchers %d",
+        payload["date"],
+        payload["sales"]["total"], payload["sales"]["count"],
+        payload["purchase"]["total"], payload["purchase"]["count"],
+        ("needs review" if payload["profit_and_loss"]["needs_review"]
+         else f"Rs.{payload['profit_and_loss']['net_profit_loss']}"),
+        payload["cash_vouchers"]["count"],
+    )
+    return payload
+
+
 def run(date, dry_run=False, dump_raw_dir=None):
     date_iso = date.strftime("%Y-%m-%d")
     log.info("Syncing %s for %s", TALLY_COMPANY_NAME, date_iso)
@@ -502,23 +540,7 @@ def run(date, dry_run=False, dump_raw_dir=None):
                     "Check the group name matches your Tally chart of accounts.")
     vouchers = fetch_vouchers_for_date(date, dump_raw_dir)
 
-    payload = {
-        "date": date_iso,
-        "synced_at": datetime.datetime.now().isoformat(),
-        "sales": _filter_by_class(vouchers, voucher_type_parents, "sales"),
-        "purchase": _filter_by_class(vouchers, voucher_type_parents, "purchase"),
-        "profit_and_loss": fetch_profit_and_loss(date, dump_raw_dir),
-        "cash_vouchers": _cash_vouchers_from(vouchers, cash_ledgers),
-    }
-
-    log.info(
-        "Sales Rs.%s (%d vch) | Purchase Rs.%s (%d vch) | P&L %s | Cash vouchers %d",
-        payload["sales"]["total"], payload["sales"]["count"],
-        payload["purchase"]["total"], payload["purchase"]["count"],
-        ("needs review" if payload["profit_and_loss"]["needs_review"]
-         else f"Rs.{payload['profit_and_loss']['net_profit_loss']}"),
-        payload["cash_vouchers"]["count"],
-    )
+    payload = _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, dump_raw_dir)
 
     if dry_run:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
@@ -529,9 +551,54 @@ def run(date, dry_run=False, dump_raw_dir=None):
     log.info("Written to Firestore: %s/%s", FIRESTORE_COLLECTION, date_iso)
 
 
+def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
+    """Syncs every day from from_date to to_date (inclusive) in one run.
+    Fetches the voucher list, voucher type classifications, and cash
+    ledgers only ONCE for the whole range (not once per day) -- P&L still
+    needs one Tally request per day, since it's Tally's own per-day report
+    export, but everything else is derived in Python from data already in
+    hand. A failure on one day is logged and skipped rather than aborting
+    the whole backfill, and there's a short pause between days so this
+    doesn't hammer Tally with back-to-back requests.
+    """
+    day_count = (to_date - from_date).days + 1
+    log.info("Backfilling %s from %s to %s (%d days)",
+              TALLY_COMPANY_NAME, from_date, to_date, day_count)
+
+    voucher_type_parents = fetch_voucher_type_parents(from_date, dump_raw_dir)
+    cash_ledgers = fetch_cash_ledger_names(from_date, dump_raw_dir)
+    if not cash_ledgers:
+        log.warning("No ledger found under 'Cash-in-Hand' -- cash voucher lists will be empty. "
+                    "Check the group name matches your Tally chart of accounts.")
+    vouchers_by_date = fetch_vouchers_grouped_by_date(dump_raw_dir)
+
+    succeeded = 0
+    failed = []
+    cur = from_date
+    while cur <= to_date:
+        date_str = cur.strftime("%Y-%m-%d")
+        try:
+            vouchers = vouchers_by_date.get(_fmt_date(cur), [])
+            payload = _build_payload(cur, vouchers, voucher_type_parents, cash_ledgers, dump_raw_dir)
+            if not dry_run:
+                push_to_firestore(date_str, payload)
+            succeeded += 1
+        except TallyError as e:
+            log.error("%s: skipped -- %s", date_str, e)
+            failed.append(date_str)
+        cur += datetime.timedelta(days=1)
+        if cur <= to_date:
+            time.sleep(2)
+
+    log.info("Backfill done: %d/%d days written%s.", succeeded, day_count,
+              f", {len(failed)} failed ({', '.join(failed)})" if failed else "")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--date", help="YYYY-MM-DD, defaults to today", default=None)
+    parser.add_argument("--backfill-from", help="YYYY-MM-DD -- sync every day from this date to --backfill-to (or today) in one run", default=None)
+    parser.add_argument("--backfill-to", help="YYYY-MM-DD, defaults to today. Only used with --backfill-from", default=None)
     parser.add_argument("--dry-run", action="store_true", help="Fetch and print, do not write to Firestore")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--dump-raw-dir", default=None, help="Save every raw Tally XML response here for debugging")
@@ -542,13 +609,16 @@ def main():
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
 
-    if args.date:
-        date = datetime.datetime.strptime(args.date, "%Y-%m-%d").date()
-    else:
-        date = datetime.date.today()
-
     try:
-        run(date, dry_run=args.dry_run, dump_raw_dir=args.dump_raw_dir)
+        if args.backfill_from:
+            from_date = datetime.datetime.strptime(args.backfill_from, "%Y-%m-%d").date()
+            to_date = (datetime.datetime.strptime(args.backfill_to, "%Y-%m-%d").date()
+                       if args.backfill_to else datetime.date.today())
+            run_backfill(from_date, to_date, dry_run=args.dry_run, dump_raw_dir=args.dump_raw_dir)
+        else:
+            date = (datetime.datetime.strptime(args.date, "%Y-%m-%d").date()
+                    if args.date else datetime.date.today())
+            run(date, dry_run=args.dry_run, dump_raw_dir=args.dump_raw_dir)
     except TallyError as e:
         log.error("Tally error: %s", e)
         sys.exit(1)
