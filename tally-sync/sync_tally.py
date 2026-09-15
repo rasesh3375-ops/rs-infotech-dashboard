@@ -186,16 +186,19 @@ def _collection_request(collection_name, obj_type, fetch_fields, from_date, to_d
     that period -- confirmed against real data, where this returned every
     voucher back to the start of the financial year (615 "cash vouchers"
     and hundreds of "purchase" vouchers for a single day whose own Day Book
-    showed 9 vouchers total). Every caller here always asks for a single day
-    (from_date == to_date), so a Voucher collection gets an explicit
-    $Date = ##SVFROMDATE filter to actually constrain it, on top of
-    whatever class filter (IsSales, etc.) was asked for -- multiple FILTER
-    entries are ANDed together by Tally.
-    """
-    formulae = dict(formulae or {})
-    if obj_type == "Voucher":
-        formulae["___OnRequestedDate"] = "$Date = ##SVFROMDATE"
+    showed 9 vouchers total).
 
+    A first attempt at fixing this added a `$Date = ##SVFROMDATE` TDL
+    filter formula -- that turned out to not work either: it silently
+    matched nothing at all, for every voucher, every day, so results
+    looked plausible on days that genuinely had zero purchase/cash
+    vouchers and were simply wrong (missing real data) on a day that had
+    real sales vouchers. Rather than keep guessing at unverified TDL
+    filter syntax, date filtering for vouchers is done in Python instead
+    (see fetch_vouchers_for_date), against the DATE field Tally already
+    returns for every voucher record -- no Tally-side date comparison to
+    get subtly wrong.
+    """
     fetch_xml = "".join(f"<FETCH>{f}</FETCH>" for f in fetch_fields)
     formulae_xml = ""
     filter_xml = ""
@@ -317,6 +320,12 @@ def fetch_vouchers_for_date(date, dump_raw_dir=None):
     sales, purchase and cash-voucher reports are all derived from this one
     fetch (see _filter_by_class and _cash_vouchers_from below) instead of
     each making its own separate request against Tally.
+
+    Tally's Voucher collection ignores SVFROMDATE/SVTODATE entirely, so
+    this pulls the whole period Tally is willing to return (confirmed to
+    be the whole financial year so far) and filters to the requested date
+    itself in Python, against the DATE field ("YYYYMMDD", the standard
+    Tally XML date format) every voucher record already carries.
     """
     xml_req = _collection_request(
         "VchList",
@@ -326,7 +335,8 @@ def fetch_vouchers_for_date(date, dump_raw_dir=None):
         date,
     )
     root = _post_xml(xml_req, dump_raw_dir, "vouchers")
-    return _collection_records(root, "VOUCHER")
+    wanted = _fmt_date(date)
+    return [v for v in _collection_records(root, "VOUCHER") if _text(v, "DATE") == wanted]
 
 
 def _voucher_amount(v):
