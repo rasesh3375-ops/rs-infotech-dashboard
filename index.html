@@ -112,7 +112,7 @@
   .brand-bar{ height:6px; border-radius:3px; margin-bottom:24px; background:linear-gradient(90deg, var(--blue), var(--black)); }
   .footer-note{ margin-top:26px; font-size:12px; color:var(--text-dim); text-align:center; }
 
-  #loginScreen{ min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
+  #loginScreen, #checkEmailScreen{ min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
   .login-card{
     background:var(--panel); border:1px solid var(--panel-edge); border-radius:16px;
     box-shadow:0 1px 3px rgba(17,17,17,0.06), 0 12px 32px rgba(17,17,17,0.08);
@@ -179,6 +179,16 @@
       <button type="submit" class="login-btn" id="loginBtn">Sign In</button>
       <div class="login-error" id="loginError"></div>
     </form>
+  </div>
+</div>
+
+<div id="checkEmailScreen" style="display:none;">
+  <div class="login-card">
+    <h1>Check your email</h1>
+    <div class="login-sub" id="checkEmailSub">We've sent a sign-in link to your email. Open it on this same device to finish signing in.</div>
+    <button type="button" class="login-btn" id="resendLinkBtn">Resend link</button>
+    <div class="login-error" id="checkEmailError"></div>
+    <div class="logout-link" id="backToLoginLink" style="margin-top:16px; display:block; text-align:center;">Back to sign in</div>
   </div>
 </div>
 
@@ -578,6 +588,42 @@ document.getElementById('btnPickDate').addEventListener('click', () => {
   loadDay(d, false);
 });
 
+// ---------------------------------------------------------------------
+// Auth -- password, then an emailed sign-in link as a second factor.
+// Password alone never grants access: a successful password check signs
+// straight back out and requires the matching email link to actually
+// establish the session, so both are needed on every fresh sign-in.
+// ---------------------------------------------------------------------
+const PENDING_EMAIL_KEY = 'rsInfotechPendingSignInEmail';
+
+function actionCodeSettings(){
+  return { url: window.location.origin + window.location.pathname, handleCodeInApp: true };
+}
+
+function showScreen(name){
+  document.getElementById('loginScreen').style.display = name === 'login' ? 'flex' : 'none';
+  document.getElementById('checkEmailScreen').style.display = name === 'checkEmail' ? 'flex' : 'none';
+  document.getElementById('appContent').style.display = name === 'app' ? 'block' : 'none';
+}
+
+function sendLinkAndShowCheckEmail(email, onDone){
+  window.localStorage.setItem(PENDING_EMAIL_KEY, email);
+  auth.sendSignInLinkToEmail(email, actionCodeSettings())
+    .then(() => {
+      document.getElementById('checkEmailSub').textContent =
+        "We've sent a sign-in link to " + email + '. Open it on this same device to finish signing in.';
+      document.getElementById('checkEmailError').classList.remove('show');
+      showScreen('checkEmail');
+    })
+    .catch((error) => {
+      const errEl = document.getElementById('loginError');
+      errEl.textContent = 'Could not send sign-in link: ' + (error.message || 'try again.');
+      errEl.classList.add('show');
+      showScreen('login');
+    })
+    .finally(() => { if (onDone) onDone(); });
+}
+
 document.getElementById('loginForm').addEventListener('submit', (e) => {
   e.preventDefault();
   const email = document.getElementById('loginEmail').value.trim();
@@ -588,6 +634,7 @@ document.getElementById('loginForm').addEventListener('submit', (e) => {
   btn.disabled = true;
   btn.textContent = 'Signing in…';
   auth.signInWithEmailAndPassword(email, password)
+    .then(() => auth.signOut().then(() => sendLinkAndShowCheckEmail(email)))
     .catch((error) => {
       errEl.textContent = 'Sign-in failed: ' + (error.message || 'check your email and password.');
       errEl.classList.add('show');
@@ -598,20 +645,62 @@ document.getElementById('loginForm').addEventListener('submit', (e) => {
     });
 });
 
+document.getElementById('resendLinkBtn').addEventListener('click', () => {
+  const email = window.localStorage.getItem(PENDING_EMAIL_KEY);
+  if (!email){ showScreen('login'); return; }
+  const btn = document.getElementById('resendLinkBtn');
+  btn.disabled = true;
+  btn.textContent = 'Sending…';
+  sendLinkAndShowCheckEmail(email, () => { btn.disabled = false; btn.textContent = 'Resend link'; });
+});
+
+document.getElementById('backToLoginLink').addEventListener('click', () => {
+  window.localStorage.removeItem(PENDING_EMAIL_KEY);
+  showScreen('login');
+});
+
 document.getElementById('logoutLink').addEventListener('click', () => {
   detachLiveListener();
+  window.localStorage.removeItem(PENDING_EMAIL_KEY);
   auth.signOut();
 });
 
+function completeEmailLinkSignInIfPresent(){
+  if (!auth.isSignInWithEmailLink(window.location.href)) return false;
+  let email = window.localStorage.getItem(PENDING_EMAIL_KEY);
+  if (!email){
+    email = window.prompt('Confirm your email to finish signing in:');
+  }
+  if (!email){ return false; }
+  auth.signInWithEmailLink(email, window.location.href)
+    .then(() => {
+      window.localStorage.removeItem(PENDING_EMAIL_KEY);
+      window.history.replaceState({}, document.title, window.location.pathname);
+    })
+    .catch((error) => {
+      showScreen('login');
+      const errEl = document.getElementById('loginError');
+      errEl.textContent = 'Sign-in link failed: ' + (error.message || 'it may have expired -- sign in again.');
+      errEl.classList.add('show');
+    });
+  return true;
+}
+
+const handlingEmailLink = completeEmailLinkSignInIfPresent();
+
 auth.onAuthStateChanged((user) => {
   if (user){
-    document.getElementById('loginScreen').style.display = 'none';
-    document.getElementById('appContent').style.display = 'block';
+    showScreen('app');
     document.getElementById('pickDate').value = todayISO();
     loadDay(todayISO(), true);
+  } else if (handlingEmailLink) {
+    // Mid sign-in via the emailed link -- leave whatever screen is
+    // already showing (checkEmail while it resolves, or login if it just
+    // failed) rather than flashing the login screen in between.
+  } else if (window.localStorage.getItem(PENDING_EMAIL_KEY)) {
+    showScreen('checkEmail');
   } else {
-    document.getElementById('loginScreen').style.display = 'flex';
-    document.getElementById('appContent').style.display = 'none';
+    showScreen('login');
     detachLiveListener();
   }
 });
