@@ -278,21 +278,33 @@ def _num(el, tag, default=0.0):
 # Report builders
 # ---------------------------------------------------------------------------
 
-def fetch_cash_ledger_names(date, dump_raw_dir=None):
-    """Ledgers parented directly under 'Cash-in-Hand' -- Cash, Petty Cash, etc.
-    Almost every Tally setup keeps cash ledgers directly under this group;
-    if yours nests them under a sub-group, add that sub-group's name here.
+def _fetch_ledger_names_under(date, wanted_parents, dump_raw_dir=None, dump_name="ledger_list"):
+    """Ledgers parented directly under any of wanted_parents (lowercase).
+    Shared by the Cash-in-Hand lookup (below) and the Bank Accounts lookup
+    -- if a setup nests these under a sub-group instead, add that
+    sub-group's name to the caller's parent set.
     """
     xml_req = _collection_request("LedgerList", "Ledger", ["NAME", "PARENT"], date, date)
-    root_el = _post_xml(xml_req, dump_raw_dir, "ledger_list")
+    root_el = _post_xml(xml_req, dump_raw_dir, dump_name)
     names = set()
     for led in _collection_records(root_el, "LEDGER"):
-        parent = _text(led, "PARENT")
-        if parent.strip().lower() == "cash-in-hand":
+        parent = _text(led, "PARENT").strip().lower()
+        if parent in wanted_parents:
             name = led.get("NAME") or _text(led, "NAME")
             if name:
                 names.add(name.strip())
     return names
+
+
+def fetch_cash_ledger_names(date, dump_raw_dir=None):
+    """Ledgers parented directly under 'Cash-in-Hand' -- Cash, Petty Cash, etc."""
+    return _fetch_ledger_names_under(date, {"cash-in-hand"}, dump_raw_dir, "ledger_list")
+
+
+def fetch_bank_ledger_names(date, dump_raw_dir=None):
+    """Ledgers parented under Tally's two standard bank groups -- 'Bank
+    Accounts' (current/savings) and 'Bank OD A/c' (overdraft/cash credit)."""
+    return _fetch_ledger_names_under(date, {"bank accounts", "bank od a/c"}, dump_raw_dir, "bank_ledger_list")
 
 
 def fetch_voucher_type_parents(date, dump_raw_dir=None):
@@ -327,7 +339,8 @@ def _fetch_all_voucher_records(anchor_date, dump_raw_dir=None):
     xml_req = _collection_request(
         "VchList",
         "Voucher",
-        ["DATE", "VOUCHERNUMBER", "PARTYLEDGERNAME", "VOUCHERTYPENAME", "ALLLEDGERENTRIES.LIST"],
+        ["DATE", "VOUCHERNUMBER", "PARTYLEDGERNAME", "VOUCHERTYPENAME", "NARRATION",
+         "ALLLEDGERENTRIES.LIST", "ALLINVENTORYENTRIES.LIST"],
         anchor_date,
         anchor_date,
     )
@@ -366,6 +379,40 @@ def _voucher_amount(v):
     return max(amounts) if amounts else 0.0
 
 
+def _voucher_description(v):
+    """What this voucher was actually for, for display alongside the
+    party/amount everywhere a voucher shows up. Prefers the stock items
+    involved (what was actually sold/bought), then falls back to the
+    narration typed on the voucher, then to whichever ledger(s) besides
+    the party were posted to (e.g. "Sales Account" on a plain service
+    invoice with no narration and no stock items) -- in roughly that order
+    of how likely each is to actually say something useful.
+    """
+    items = []
+    for inv in v.findall(".//ALLINVENTORYENTRIES.LIST"):
+        name = (inv.get("NAME") or _text(inv, "STOCKITEMNAME") or "").strip()
+        if name and name not in items:
+            items.append(name)
+    if items:
+        shown = ", ".join(items[:4])
+        if len(items) > 4:
+            shown += f" +{len(items) - 4} more"
+        return shown
+
+    narration = _text(v, "NARRATION").strip()
+    if narration:
+        return narration
+
+    other_ledgers = []
+    for entry in v.findall(".//ALLLEDGERENTRIES.LIST"):
+        if _text(entry, "ISPARTYLEDGER").lower() == "yes":
+            continue
+        name = (entry.get("NAME") or _text(entry, "LEDGERNAME") or "").strip()
+        if name and name not in other_ledgers:
+            other_ledgers.append(name)
+    return ", ".join(other_ledgers[:3])
+
+
 def _filter_by_class(vouchers, type_parents, wanted_parent):
     result = []
     total = 0.0
@@ -379,31 +426,44 @@ def _filter_by_class(vouchers, type_parents, wanted_parent):
             "party": _text(v, "PARTYLEDGERNAME"),
             "type": vch_type,
             "amount": round(amount, 2),
+            "description": _voucher_description(v),
         })
         total += amount
     return {"total": round(total, 2), "count": len(result), "vouchers": result}
 
 
-def _cash_vouchers_from(vouchers, cash_ledgers):
+def _ledger_touching_vouchers_from(vouchers, ledger_names, in_label, out_label):
+    """Vouchers where any ledger entry hits one of ledger_names -- shared by
+    cash and bank voucher detection, which differ only in which ledgers
+    they're looking for and what to call money moving in vs out."""
     result = []
     for v in vouchers:
-        cash_entry = None
+        matched_entry = None
         for entry in v.findall(".//ALLLEDGERENTRIES.LIST"):
             ledger_name = (entry.get("NAME") or _text(entry, "LEDGERNAME") or "").strip()
-            if ledger_name in cash_ledgers:
-                cash_entry = entry
+            if ledger_name in ledger_names:
+                matched_entry = entry
                 break
-        if cash_entry is None:
+        if matched_entry is None:
             continue
-        is_debit = _text(cash_entry, "ISDEEMEDPOSITIVE").lower() == "yes"
+        is_debit = _text(matched_entry, "ISDEEMEDPOSITIVE").lower() == "yes"
         result.append({
             "voucher_no": _text(v, "VOUCHERNUMBER"),
             "party": _text(v, "PARTYLEDGERNAME"),
             "type": _text(v, "VOUCHERTYPENAME"),
-            "direction": "cash_in" if is_debit else "cash_out",
-            "amount": round(abs(_num(cash_entry, "AMOUNT")), 2),
+            "direction": in_label if is_debit else out_label,
+            "amount": round(abs(_num(matched_entry, "AMOUNT")), 2),
+            "description": _voucher_description(v),
         })
     return {"count": len(result), "vouchers": result}
+
+
+def _cash_vouchers_from(vouchers, cash_ledgers):
+    return _ledger_touching_vouchers_from(vouchers, cash_ledgers, "cash_in", "cash_out")
+
+
+def _bank_vouchers_from(vouchers, bank_ledgers):
+    return _ledger_touching_vouchers_from(vouchers, bank_ledgers, "bank_in", "bank_out")
 
 
 def fetch_profit_and_loss(date, dump_raw_dir=None):
@@ -519,7 +579,7 @@ def push_to_firestore(date_iso, payload):
 # Main
 # ---------------------------------------------------------------------------
 
-def _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, dump_raw_dir=None):
+def _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, bank_ledgers, dump_raw_dir=None):
     payload = {
         "date": date.strftime("%Y-%m-%d"),
         "synced_at": datetime.datetime.now().isoformat(),
@@ -527,15 +587,17 @@ def _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, dump_raw_
         "purchase": _filter_by_class(vouchers, voucher_type_parents, "purchase"),
         "profit_and_loss": fetch_profit_and_loss(date, dump_raw_dir),
         "cash_vouchers": _cash_vouchers_from(vouchers, cash_ledgers),
+        "bank_vouchers": _bank_vouchers_from(vouchers, bank_ledgers),
     }
     log.info(
-        "%s: Sales Rs.%s (%d vch) | Purchase Rs.%s (%d vch) | P&L %s | Cash vouchers %d",
+        "%s: Sales Rs.%s (%d vch) | Purchase Rs.%s (%d vch) | P&L %s | Cash vouchers %d | Bank vouchers %d",
         payload["date"],
         payload["sales"]["total"], payload["sales"]["count"],
         payload["purchase"]["total"], payload["purchase"]["count"],
         ("needs review" if payload["profit_and_loss"]["needs_review"]
          else f"Rs.{payload['profit_and_loss']['net_profit_loss']}"),
         payload["cash_vouchers"]["count"],
+        payload["bank_vouchers"]["count"],
     )
     return payload
 
@@ -546,12 +608,16 @@ def run(date, dry_run=False, dump_raw_dir=None):
 
     voucher_type_parents = fetch_voucher_type_parents(date, dump_raw_dir)
     cash_ledgers = fetch_cash_ledger_names(date, dump_raw_dir)
+    bank_ledgers = fetch_bank_ledger_names(date, dump_raw_dir)
     if not cash_ledgers:
         log.warning("No ledger found under 'Cash-in-Hand' -- cash voucher list will be empty. "
                     "Check the group name matches your Tally chart of accounts.")
+    if not bank_ledgers:
+        log.warning("No ledger found under 'Bank Accounts'/'Bank OD A/c' -- bank voucher list will be empty. "
+                    "Check the group name matches your Tally chart of accounts.")
     vouchers = fetch_vouchers_for_date(date, dump_raw_dir)
 
-    payload = _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, dump_raw_dir)
+    payload = _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, bank_ledgers, dump_raw_dir)
 
     if dry_run:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
@@ -564,7 +630,7 @@ def run(date, dry_run=False, dump_raw_dir=None):
 
 def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
     """Syncs every day from from_date to to_date (inclusive) in one run.
-    Fetches the voucher list, voucher type classifications, and cash
+    Fetches the voucher list, voucher type classifications, and cash/bank
     ledgers only ONCE for the whole range (not once per day) -- P&L still
     needs one Tally request per day, since it's Tally's own per-day report
     export, but everything else is derived in Python from data already in
@@ -578,8 +644,12 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
 
     voucher_type_parents = fetch_voucher_type_parents(from_date, dump_raw_dir)
     cash_ledgers = fetch_cash_ledger_names(from_date, dump_raw_dir)
+    bank_ledgers = fetch_bank_ledger_names(from_date, dump_raw_dir)
     if not cash_ledgers:
         log.warning("No ledger found under 'Cash-in-Hand' -- cash voucher lists will be empty. "
+                    "Check the group name matches your Tally chart of accounts.")
+    if not bank_ledgers:
+        log.warning("No ledger found under 'Bank Accounts'/'Bank OD A/c' -- bank voucher lists will be empty. "
                     "Check the group name matches your Tally chart of accounts.")
     vouchers_by_date = fetch_vouchers_grouped_by_date(dump_raw_dir)
 
@@ -590,7 +660,7 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
         date_str = cur.strftime("%Y-%m-%d")
         try:
             vouchers = vouchers_by_date.get(_fmt_date(cur), [])
-            payload = _build_payload(cur, vouchers, voucher_type_parents, cash_ledgers, dump_raw_dir)
+            payload = _build_payload(cur, vouchers, voucher_type_parents, cash_ledgers, bank_ledgers, dump_raw_dir)
             if not dry_run:
                 push_to_firestore(date_str, payload)
             succeeded += 1
