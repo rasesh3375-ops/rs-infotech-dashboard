@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """
-Pulls Daily Sales, Daily Purchase, Daily Profit & Loss, Daily Cash Vouchers
-and Daily Stock Summary out of a local Tally Prime install (via its
-HTTP/XML export gateway) and writes one document per day to Firestore, for
-the rs-infotech dashboard (../rs-infotech/index.html) to read.
+Pulls Daily Sales, Daily Purchase, Daily Profit & Loss and Daily Cash
+Vouchers out of a local Tally Prime install (via its HTTP/XML export
+gateway) and writes one document per day to Firestore, for the
+rs-infotech dashboard (../rs-infotech/index.html) to read.
+
+Stock Summary is deliberately NOT included here -- computing closing
+stock balances/values as of a date was consistently the slowest thing
+Tally did, and coincided with a real Tally Prime crash (Memory Access
+Violation) on shared company data. Don't add it back without first
+confirming with Tally support why that computation was unstable.
 
 Run this on the SAME PC as Tally Prime, with Tally open and the company
 loaded. See the setup walkthrough for how to enable Tally's XML gateway,
@@ -54,11 +60,6 @@ SERVICE_ACCOUNT_PATH = os.path.join(os.path.dirname(__file__), "service-account.
 FIRESTORE_COLLECTION = "daily_reports"
 
 REQUEST_TIMEOUT_SECONDS = 120
-
-# Computing closing stock balances/values as of a date is consistently the
-# slowest thing Tally does here -- it was still measured under this on real
-# company data, while every other report finished in well under 30s.
-STOCK_SUMMARY_TIMEOUT_SECONDS = 600
 
 log = logging.getLogger("tally_sync")
 
@@ -343,42 +344,6 @@ def fetch_cash_vouchers(date, dump_raw_dir=None):
     return {"count": len(vouchers), "vouchers": vouchers}
 
 
-def fetch_stock_summary(date, dump_raw_dir=None):
-    xml_req = _collection_request(
-        "StockList",
-        "StockItem",
-        ["NAME", "CLOSINGBALANCE", "CLOSINGVALUE", "BASEUNITS"],
-        date,
-        date,
-    )
-    root = _post_xml(xml_req, dump_raw_dir, "stock_summary", timeout=STOCK_SUMMARY_TIMEOUT_SECONDS)
-
-    items = []
-    for it in root.iter("STOCKITEM"):
-        name = it.get("NAME") or _text(it, "NAME")
-        qty_raw = _text(it, "CLOSINGBALANCE")
-        qty = _parse_qty(qty_raw)
-        value = _num(it, "CLOSINGVALUE")
-        unit = _text(it, "BASEUNITS")
-        if not name or (qty == 0 and value == 0):
-            continue
-        items.append({"name": name, "qty": qty, "unit": unit, "value": round(value, 2)})
-
-    items.sort(key=lambda x: x["value"], reverse=True)
-    return {"count": len(items), "items": items}
-
-
-def _parse_qty(raw):
-    # Tally formats quantities like "12 PCS" or "-3.500 KG" -- pull the number.
-    m = re.search(r"-?[\d,]+(\.\d+)?", raw or "")
-    if not m:
-        return 0.0
-    try:
-        return float(m.group(0).replace(",", ""))
-    except ValueError:
-        return 0.0
-
-
 def fetch_profit_and_loss(date, dump_raw_dir=None):
     """Uses Tally's own native Profit & Loss report export for a single day
     (SVFROMDATE == SVTODATE == date), so Tally does the Income/Expense
@@ -477,17 +442,15 @@ def run(date, dry_run=False, dump_raw_dir=None):
         "purchase": fetch_daily_purchase(date, dump_raw_dir),
         "profit_and_loss": fetch_profit_and_loss(date, dump_raw_dir),
         "cash_vouchers": fetch_cash_vouchers(date, dump_raw_dir),
-        "stock_summary": fetch_stock_summary(date, dump_raw_dir),
     }
 
     log.info(
-        "Sales Rs.%s (%d vch) | Purchase Rs.%s (%d vch) | P&L %s | Cash vouchers %d | Stock items %d",
+        "Sales Rs.%s (%d vch) | Purchase Rs.%s (%d vch) | P&L %s | Cash vouchers %d",
         payload["sales"]["total"], payload["sales"]["count"],
         payload["purchase"]["total"], payload["purchase"]["count"],
         ("needs review" if payload["profit_and_loss"]["needs_review"]
          else f"Rs.{payload['profit_and_loss']['net_profit_loss']}"),
         payload["cash_vouchers"]["count"],
-        payload["stock_summary"]["count"],
     )
 
     if dry_run:

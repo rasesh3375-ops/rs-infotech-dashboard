@@ -147,7 +147,7 @@
 <div id="loginScreen">
   <div class="login-card">
     <h1>R.S.Infotech Dashboard</h1>
-    <div class="login-sub">Sign in to view today's sales, purchase, P&amp;L, cash vouchers and stock.</div>
+    <div class="login-sub">Sign in to view today's sales, purchase, P&amp;L and cash vouchers.</div>
     <form id="loginForm">
       <div class="login-field">
         <label for="loginEmail">Email</label>
@@ -201,25 +201,14 @@
     <div class="review-flag" id="plReviewFlag" style="display:none;"></div>
   </div>
 
-  <div class="section-label">Cash &amp; Stock</div>
-  <div class="row2">
-    <div class="card table-card">
-      <div class="kicker">Cash vouchers</div>
-      <div class="table-scroll">
-        <table class="datatable" id="cashTable">
-          <thead><tr><th>Party</th><th>Type</th><th></th><th class="num-col">Amount</th></tr></thead>
-          <tbody id="cashBody"><tr><td colspan="4" class="empty-note">Waiting for first update…</td></tr></tbody>
-        </table>
-      </div>
-    </div>
-    <div class="card table-card">
-      <div class="kicker">Stock summary (closing)</div>
-      <div class="table-scroll">
-        <table class="datatable" id="stockTable">
-          <thead><tr><th>Item</th><th class="num-col">Qty</th><th class="num-col">Value</th></tr></thead>
-          <tbody id="stockBody"><tr><td colspan="3" class="empty-note">Waiting for first update…</td></tr></tbody>
-        </table>
-      </div>
+  <div class="section-label">Cash Vouchers</div>
+  <div class="card table-card">
+    <div class="kicker">Cash vouchers</div>
+    <div class="table-scroll">
+      <table class="datatable" id="cashTable">
+        <thead><tr><th>Party</th><th>Type</th><th></th><th class="num-col">Amount</th></tr></thead>
+        <tbody id="cashBody"><tr><td colspan="4" class="empty-note">Waiting for first update…</td></tr></tbody>
+      </table>
     </div>
   </div>
 
@@ -293,24 +282,11 @@ function renderCashTable(rows){
     </tr>`).join('');
 }
 
-function renderStockTable(items){
-  const body = document.getElementById('stockBody');
-  if (!items || items.length === 0){
-    body.innerHTML = '<tr><td colspan="3" class="empty-note">No stock data for this day.</td></tr>';
-    return;
-  }
-  body.innerHTML = items.map(it => {
-    const qty = (it.qty % 1 === 0) ? it.qty : it.qty.toFixed(2);
-    return `<tr><td>${escapeHtml(it.name)}</td><td class="num-col">${qty}${it.unit ? ' ' + escapeHtml(it.unit) : ''}</td><td class="num-col">${fmtINR(it.value)}</td></tr>`;
-  }).join('');
-}
-
 function applyData(data){
   const sales = data.sales || { total: 0, count: 0 };
   const purchase = data.purchase || { total: 0, count: 0 };
   const pl = data.profit_and_loss || { needs_review: true, net_profit_loss: null };
   const cash = data.cash_vouchers || { vouchers: [] };
-  const stock = data.stock_summary || { items: [] };
 
   document.getElementById('salesTotal').textContent = fmtINR(sales.total);
   document.getElementById('salesCount').textContent = sales.count + ' voucher' + (sales.count === 1 ? '' : 's');
@@ -331,7 +307,6 @@ function applyData(data){
   }
 
   renderCashTable(cash.vouchers);
-  renderStockTable(stock.items);
 }
 
 function clearData(){
