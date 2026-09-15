@@ -236,6 +236,24 @@ def _collection_request(collection_name, obj_type, fetch_fields, from_date, to_d
 </ENVELOPE>"""
 
 
+def _collection_records(root, tag):
+    """Real records (VOUCHER, LEDGER, ...) live as direct children of the
+    <COLLECTION> element under <DATA>. Tally's own CMPINFO header --
+    present in every response -- carries same-named counter fields (e.g.
+    "<VOUCHER>16</VOUCHER>" meaning 16 voucher types exist, "<LEDGER>59
+    </LEDGER>" meaning 59 ledgers exist), so a root.iter(tag) search over
+    the whole document matches those counters as if they were real
+    records: confirmed against real data, where a Voucher collection that
+    Tally itself left completely empty (zero matches) still produced one
+    phantom "voucher" with every field blank, because root.iter("VOUCHER")
+    found CMPINFO's <VOUCHER>16</VOUCHER> counter instead of nothing.
+    """
+    collection = root.find(".//DATA/COLLECTION")
+    if collection is None:
+        return []
+    return collection.findall(tag)
+
+
 def _text(el, tag, default=""):
     child = el.find(tag)
     return child.text.strip() if child is not None and child.text else default
@@ -263,7 +281,7 @@ def fetch_cash_ledger_names(date, dump_raw_dir=None):
     xml_req = _collection_request("LedgerList", "Ledger", ["NAME", "PARENT"], date, date)
     root_el = _post_xml(xml_req, dump_raw_dir, "ledger_list")
     names = set()
-    for led in root_el.iter("LEDGER"):
+    for led in _collection_records(root_el, "LEDGER"):
         parent = _text(led, "PARENT")
         if parent.strip().lower() == "cash-in-hand":
             name = led.get("NAME") or _text(led, "NAME")
@@ -294,7 +312,7 @@ def _fetch_vouchers_by_class(date, filter_name, formula_expr, dump_raw_dir, dump
 
     vouchers = []
     total = 0.0
-    for v in root.iter("VOUCHER"):
+    for v in _collection_records(root, "VOUCHER"):
         party = _text(v, "PARTYLEDGERNAME")
         vch_no = _text(v, "VOUCHERNUMBER")
         vch_type = _text(v, "VOUCHERTYPENAME")
@@ -337,7 +355,7 @@ def fetch_cash_vouchers(date, dump_raw_dir=None):
     root = _post_xml(xml_req, dump_raw_dir, "cash_vouchers")
 
     vouchers = []
-    for v in root.iter("VOUCHER"):
+    for v in _collection_records(root, "VOUCHER"):
         cash_entry = None
         for entry in v.findall(".//ALLLEDGERENTRIES.LIST"):
             ledger_name = (entry.get("NAME") or _text(entry, "LEDGERNAME") or "").strip()
