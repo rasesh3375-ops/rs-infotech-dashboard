@@ -444,8 +444,19 @@ def fetch_profit_and_loss(date, dump_raw_dir=None):
     # primary groups (not user-renameable), so classifying by exact name is
     # as reliable as classification gets without reimplementing Tally's own
     # ledger-to-group resolution.
-    INCOME_GROUPS = {"sales accounts", "direct incomes", "indirect incomes"}
-    EXPENSE_GROUPS = {"purchase accounts", "direct expenses", "indirect expenses"}
+    #
+    # Opening/Closing Stock belong in this same sum -- Tally's own formula is
+    # Nett Profit = (Sales+DirectIncome+IndirectIncome+ClosingStock)
+    #             - (Purchase+DirectExpense+IndirectExpense+OpeningStock).
+    # Confirmed against a real day (4-Sep-26): omitting stock gave Rs.14,498
+    # too much profit, exactly equal to that day's Opening Stock minus
+    # Closing Stock -- adding Closing Stock to income and Opening Stock to
+    # expense here reproduces Tally's own Nett Profit to the rupee. A day
+    # with no stock movement omits both lines from the export entirely
+    # (rather than showing them as equal, cancelling values), which nets to
+    # the same zero effect as if they were included and equal.
+    INCOME_GROUPS = {"sales accounts", "direct incomes", "indirect incomes", "closing stock"}
+    EXPENSE_GROUPS = {"purchase accounts", "direct expenses", "indirect expenses", "opening stock"}
 
     total_income = 0.0
     total_expense = 0.0
