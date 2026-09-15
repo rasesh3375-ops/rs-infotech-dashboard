@@ -505,21 +505,29 @@ def fetch_profit_and_loss(date, dump_raw_dir=None):
     # as reliable as classification gets without reimplementing Tally's own
     # ledger-to-group resolution.
     #
-    # Opening/Closing Stock belong in this same sum -- Tally's own formula is
-    # Nett Profit = (Sales+DirectIncome+IndirectIncome+ClosingStock)
-    #             - (Purchase+DirectExpense+IndirectExpense+OpeningStock).
-    # Confirmed against a real day (4-Sep-26): omitting stock gave Rs.14,498
-    # too much profit, exactly equal to that day's Opening Stock minus
-    # Closing Stock -- adding Closing Stock to income and Opening Stock to
-    # expense here reproduces Tally's own Nett Profit to the rupee. A day
-    # with no stock movement omits both lines from the export entirely
-    # (rather than showing them as equal, cancelling values), which nets to
-    # the same zero effect as if they were included and equal.
-    INCOME_GROUPS = {"sales accounts", "direct incomes", "indirect incomes", "closing stock"}
-    EXPENSE_GROUPS = {"purchase accounts", "direct expenses", "indirect expenses", "opening stock"}
+    # Opening/Closing Stock belong in a single day's Nett Profit -- Tally's
+    # own formula is Nett Profit = (Sales+DirectIncome+IndirectIncome+
+    # ClosingStock) - (Purchase+DirectExpense+IndirectExpense+OpeningStock),
+    # confirmed against a real day (4-Sep-26) to the rupee. But they are
+    # BALANCES (stock value at a point in time), not flows like Sales or
+    # Purchase -- summing many days' Opening/Closing Stock the way flow
+    # figures are legitimately summed across a period does NOT recover the
+    # period's real stock movement, it just adds the same large balance
+    # figure over and over. Confirmed the hard way: folding stock into
+    # total_income/total_expense (which the dashboard sums across a
+    # period) inflated a 168-day total by roughly 10x versus Tally's own
+    # period report. So stock is tracked in its own fields here, used only
+    # for this single day's net_profit_loss, and deliberately kept OUT of
+    # total_income/total_expense, which stay flow-only and safe to sum
+    # across any number of days.
+    INCOME_GROUPS = {"sales accounts", "direct incomes", "indirect incomes"}
+    EXPENSE_GROUPS = {"purchase accounts", "direct expenses", "indirect expenses"}
+    STOCK_GROUPS = {"closing stock": "closing", "opening stock": "opening"}
 
     total_income = 0.0
     total_expense = 0.0
+    opening_stock = 0.0
+    closing_stock = 0.0
     matched_any = False
     pending_name = None
     for child in root:
@@ -535,6 +543,12 @@ def fetch_profit_and_loss(date, dump_raw_dir=None):
             elif key in EXPENSE_GROUPS:
                 total_expense += amount
                 matched_any = True
+            elif key in STOCK_GROUPS:
+                if STOCK_GROUPS[key] == "closing":
+                    closing_stock += amount
+                else:
+                    opening_stock += amount
+                matched_any = True
             pending_name = None
 
     if not matched_any:
@@ -545,11 +559,15 @@ def fetch_profit_and_loss(date, dump_raw_dir=None):
             reason += " Re-run with --dump-raw-dir to save the raw XML for inspection."
         return {"needs_review": True, "reason": reason, "net_profit_loss": None}
 
+    net_profit_loss = (total_income + closing_stock) - (total_expense + opening_stock)
+
     return {
         "needs_review": False,
-        "net_profit_loss": round(total_income - total_expense, 2),
+        "net_profit_loss": round(net_profit_loss, 2),
         "total_income": round(total_income, 2),
         "total_expense": round(total_expense, 2),
+        "opening_stock": round(opening_stock, 2),
+        "closing_stock": round(closing_stock, 2),
     }
 
 
