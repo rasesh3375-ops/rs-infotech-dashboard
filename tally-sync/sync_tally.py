@@ -181,7 +181,21 @@ def _collection_request(collection_name, obj_type, fetch_fields, from_date, to_d
     way to pull voucher/ledger/stock-item data out of Tally -- Tally computes
     the collection from its own object model, rather than us scraping a
     display report.
+
+    SVFROMDATE/SVTODATE alone do NOT restrict a plain Voucher collection to
+    that period -- confirmed against real data, where this returned every
+    voucher back to the start of the financial year (615 "cash vouchers"
+    and hundreds of "purchase" vouchers for a single day whose own Day Book
+    showed 9 vouchers total). Every caller here always asks for a single day
+    (from_date == to_date), so a Voucher collection gets an explicit
+    $Date = ##SVFROMDATE filter to actually constrain it, on top of
+    whatever class filter (IsSales, etc.) was asked for -- multiple FILTER
+    entries are ANDed together by Tally.
     """
+    formulae = dict(formulae or {})
+    if obj_type == "Voucher":
+        formulae["___OnRequestedDate"] = "$Date = ##SVFROMDATE"
+
     fetch_xml = "".join(f"<FETCH>{f}</FETCH>" for f in fetch_fields)
     formulae_xml = ""
     filter_xml = ""
@@ -372,36 +386,51 @@ def fetch_profit_and_loss(date, dump_raw_dir=None):
 </ENVELOPE>"""
     root = _post_xml(xml_req, dump_raw_dir, "profit_and_loss")
 
-    # ElementTree has no getparent(), so walk every element that has a
-    # DSPACCNAME child and look at that same element's amount children --
-    # Tally groups each report line's name and figures under one node.
-    net_line = None
-    for parent in root.iter():
-        acc_el = parent.find("DSPACCNAME")
-        if acc_el is None:
-            continue
-        name = "".join(acc_el.itertext()).strip()
-        if re.search(r"nett?\s*(profit|loss)", name, re.IGNORECASE):
-            amt_el = parent.find("DSPCLDRAMT")
-            if amt_el is None or not (amt_el.text or "").strip():
-                amt_el = parent.find("DSPCLCRAMT")
-            amount = _num(parent, amt_el.tag if amt_el is not None else "DSPCLDRAMT")
-            net_line = {"label": name, "amount": amount}
-            break
+    # Confirmed against a real response: Tally does NOT include a "Nett
+    # Profit"/"Nett Loss" line in this export at all -- it returns a flat,
+    # ordered sequence of <DSPACCNAME><DSPDISPNAME>Group Name</DSPDISPNAME>
+    # </DSPACCNAME> elements, each immediately followed by a *sibling*
+    # <PLAMT><BSMAINAMT>amount</BSMAINAMT></PLAMT> -- not nested together,
+    # and a group with nothing posted that day is omitted entirely rather
+    # than shown as zero. These group names are Tally's own fixed, built-in
+    # primary groups (not user-renameable), so classifying by exact name is
+    # as reliable as classification gets without reimplementing Tally's own
+    # ledger-to-group resolution.
+    INCOME_GROUPS = {"sales accounts", "direct incomes", "indirect incomes"}
+    EXPENSE_GROUPS = {"purchase accounts", "direct expenses", "indirect expenses"}
 
-    if net_line is None:
-        reason = "Could not find a 'Nett Profit'/'Nett Loss' line in Tally's P&L export."
+    total_income = 0.0
+    total_expense = 0.0
+    matched_any = False
+    pending_name = None
+    for child in root:
+        if child.tag == "DSPACCNAME":
+            disp = child.find("DSPDISPNAME")
+            pending_name = "".join(disp.itertext()).strip() if disp is not None else ""
+        elif child.tag == "PLAMT" and pending_name is not None:
+            amount = _num(child, "BSMAINAMT") or _num(child, "PLSUBAMT")
+            key = pending_name.lower()
+            if key in INCOME_GROUPS:
+                total_income += amount
+                matched_any = True
+            elif key in EXPENSE_GROUPS:
+                total_expense += amount
+                matched_any = True
+            pending_name = None
+
+    if not matched_any:
+        reason = ("Could not find any of Tally's standard Income/Expense groups (Sales "
+                   "Accounts, Direct/Indirect Incomes, Purchase Accounts, Direct/Indirect "
+                   "Expenses) in the P&L export.")
         if not dump_raw_dir:
             reason += " Re-run with --dump-raw-dir to save the raw XML for inspection."
         return {"needs_review": True, "reason": reason, "net_profit_loss": None}
 
-    is_loss = "loss" in net_line["label"].lower()
-    net_amount = -abs(net_line["amount"]) if is_loss else abs(net_line["amount"])
-
     return {
         "needs_review": False,
-        "net_profit_loss": round(net_amount, 2),
-        "label": net_line["label"],
+        "net_profit_loss": round(total_income - total_expense, 2),
+        "total_income": round(total_income, 2),
+        "total_expense": round(total_expense, 2),
     }
 
 
