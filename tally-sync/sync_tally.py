@@ -524,6 +524,22 @@ def fetch_profit_and_loss(date, dump_raw_dir=None):
     EXPENSE_GROUPS = {"purchase accounts", "direct expenses", "indirect expenses"}
     STOCK_GROUPS = {"closing stock": "closing", "opening stock": "opening"}
 
+    # Confirmed against a real 11-Sep-26 response: when Tally shows a Cost of
+    # Sales sub-schedule (Opening Stock/Purchase Accounts/Closing Stock/Direct
+    # Expenses grouped together -- this only appears on some days, which is
+    # why 4-Sep parsed fine without this), it renames two of those lines to
+    # "Add: Purchase Accounts" and "Less: Closing Stock". Neither matched our
+    # plain group names, so both were silently dropped from the total -- the
+    # whole point of matched_any is to catch a report matching nothing at
+    # all, and it didn't catch this because Sales/Direct Expenses/etc still
+    # matched fine, just with two real amounts missing from the sum.
+    def _normalized_group_key(name):
+        key = name.strip().lower()
+        for prefix in ("add: ", "add:", "less: ", "less:"):
+            if key.startswith(prefix):
+                return key[len(prefix):].strip()
+        return key
+
     total_income = 0.0
     total_expense = 0.0
     opening_stock = 0.0
@@ -536,7 +552,16 @@ def fetch_profit_and_loss(date, dump_raw_dir=None):
             pending_name = "".join(disp.itertext()).strip() if disp is not None else ""
         elif child.tag == "PLAMT" and pending_name is not None:
             amount = _num(child, "BSMAINAMT") or _num(child, "PLSUBAMT")
-            key = pending_name.lower()
+            # Also confirmed against that same 11-Sep response: every line
+            # inside that Cost of Sales sub-schedule comes back NEGATIVE --
+            # including Closing Stock, which should increase profit, not
+            # reduce it. These per-line signs don't encode debit/credit
+            # individually; Tally only gets the sign right on the subtotal
+            # it prints itself. Our own formula below already applies the
+            # correct +/- for each group, so every group needs its true
+            # magnitude here, not Tally's display sign for that line.
+            amount = abs(amount)
+            key = _normalized_group_key(pending_name)
             if key in INCOME_GROUPS:
                 total_income += amount
                 matched_any = True
