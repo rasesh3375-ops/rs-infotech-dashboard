@@ -135,6 +135,10 @@
   .login-btn:disabled{ background:var(--ring-track); color:var(--text-dim); cursor:default; }
   .login-error{ color:var(--red); font-size:13px; margin-top:14px; display:none; }
   .login-error.show{ display:block; }
+  .login-info{ color:var(--blue); font-size:13px; margin-top:14px; display:none; }
+  .login-info.show{ display:block; }
+  .forgot-password-link{ display:block; text-align:right; font-size:13px; color:var(--text-dim); text-decoration:underline; cursor:pointer; margin:-8px 0 16px; }
+  .forgot-password-link:hover{ color:var(--text); }
   #appContent{ display:none; }
 
   .controls-bar{
@@ -176,8 +180,10 @@
         <label for="loginPassword">Password</label>
         <input type="password" id="loginPassword" autocomplete="current-password" required>
       </div>
+      <span class="forgot-password-link" id="forgotPasswordLink">Forgot password?</span>
       <button type="submit" class="login-btn" id="loginBtn">Sign In</button>
       <div class="login-error" id="loginError"></div>
+      <div class="login-info" id="loginInfo"></div>
     </form>
   </div>
 </div>
@@ -660,6 +666,28 @@ document.getElementById('loginForm').addEventListener('submit', (e) => {
     .finally(() => {
       btn.disabled = false;
       btn.textContent = 'Sign In';
+    });
+});
+
+document.getElementById('forgotPasswordLink').addEventListener('click', () => {
+  const email = document.getElementById('loginEmail').value.trim();
+  const errEl = document.getElementById('loginError');
+  const infoEl = document.getElementById('loginInfo');
+  errEl.classList.remove('show');
+  infoEl.classList.remove('show');
+  if (!email){
+    errEl.textContent = 'Type your email above first, then tap "Forgot password?".';
+    errEl.classList.add('show');
+    return;
+  }
+  auth.sendPasswordResetEmail(email)
+    .then(() => {
+      infoEl.textContent = 'Password reset link sent to ' + email + '. Check your email (and Spam folder).';
+      infoEl.classList.add('show');
+    })
+    .catch((error) => {
+      errEl.textContent = 'Could not send reset email: ' + (error.message || 'try again.');
+      errEl.classList.add('show');
     });
 });
 
