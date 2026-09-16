@@ -523,6 +523,10 @@ def fetch_profit_and_loss(date, dump_raw_dir=None):
     INCOME_GROUPS = {"sales accounts", "direct incomes", "indirect incomes"}
     EXPENSE_GROUPS = {"purchase accounts", "direct expenses", "indirect expenses"}
     STOCK_GROUPS = {"closing stock": "closing", "opening stock": "opening"}
+    # Subtotal/heading lines Tally prints alongside the real ones above --
+    # safe to skip, not a sign of a missing group like an unrecognized name
+    # with a real amount would be.
+    KNOWN_SUBTOTAL_LABELS = {"cost of sales :", "gross profit c/o", "gross profit b/f"}
 
     # Confirmed against a real 11-Sep-26 response: when Tally shows a Cost of
     # Sales sub-schedule (Opening Stock/Purchase Accounts/Closing Stock/Direct
@@ -574,6 +578,21 @@ def fetch_profit_and_loss(date, dump_raw_dir=None):
                 else:
                     opening_stock += amount
                 matched_any = True
+            elif amount != 0 and key not in KNOWN_SUBTOTAL_LABELS:
+                # Anything else with a real amount attached and a name we
+                # don't recognise as one of Tally's own subtotal/schedule
+                # headings is a line we're silently dropping from the total
+                # -- exactly how "Add: Purchase Accounts" and "Less: Closing
+                # Stock" went missing before this was added. Surfaced as a
+                # warning (visible with --verbose) rather than failing the
+                # sync, since one odd line on one day shouldn't block every
+                # other day's report.
+                log.warning(
+                    "%s: unrecognized P&L line %r (Rs.%s) -- not counted in any "
+                    "total. If this is a real Income/Expense/Stock line under a "
+                    "name not seen before, it needs adding to the matching above.",
+                    date, pending_name, amount,
+                )
             pending_name = None
 
     if not matched_any:
