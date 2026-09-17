@@ -384,7 +384,14 @@ function applyData(data){
   renderVoucherDetailTable('salesDetailBody', sales.vouchers);
   renderVoucherDetailTable('purchaseDetailBody', purchase.vouchers);
 
-  loadPlPeriod('daily');
+  // Called on every live Firestore update for today (onSnapshot fires more
+  // than once -- once from cache, once from the server, then again on any
+  // real change). Refreshing whichever period tab is actually on screen,
+  // not always 'daily', matters here: hardcoding 'daily' used to snap the
+  // view back to Daily -- today's card, dash and all if today hasn't
+  // synced yet -- every time the listener fired, undoing whatever period
+  // (Weekly/Monthly/...) the person had just clicked.
+  loadPlPeriod(currentPlPeriod);
 
   renderMoneyTable('cashBody', cash.vouchers, 'No cash vouchers for this day.');
   renderMoneyTable('bankBody', bank.vouchers, 'No bank transactions for this day.');
