@@ -549,11 +549,13 @@ def fetch_profit_and_loss(date, dump_raw_dir=None):
     opening_stock = 0.0
     closing_stock = 0.0
     matched_any = False
+    saw_any_line = False
     pending_name = None
     for child in root:
         if child.tag == "DSPACCNAME":
             disp = child.find("DSPDISPNAME")
             pending_name = "".join(disp.itertext()).strip() if disp is not None else ""
+            saw_any_line = True
         elif child.tag == "PLAMT" and pending_name is not None:
             amount = _num(child, "BSMAINAMT") or _num(child, "PLSUBAMT")
             # Also confirmed against that same 11-Sep response: every line
@@ -594,6 +596,26 @@ def fetch_profit_and_loss(date, dump_raw_dir=None):
                     date, pending_name, amount,
                 )
             pending_name = None
+
+    if not saw_any_line:
+        # Confirmed against the comment above: Tally omits a group's line
+        # entirely when nothing was posted to it that day, so a day with
+        # literally nothing posted anywhere in the P&L comes back as an
+        # empty sequence of DSPACCNAME/PLAMT pairs -- zero of them, not a
+        # zero amount against each one. That used to fall through to the
+        # "couldn't find any groups" branch below and get flagged
+        # needs_review, which is wrong: it's not that the report was
+        # unrecognizable, it's that Tally is correctly saying nothing
+        # happened. A genuine quiet day (holiday, Sunday, shop closed)
+        # should show Rs.0, not a review flag.
+        return {
+            "needs_review": False,
+            "net_profit_loss": 0.0,
+            "total_income": 0.0,
+            "total_expense": 0.0,
+            "opening_stock": 0.0,
+            "closing_stock": 0.0,
+        }
 
     if not matched_any:
         reason = ("Could not find any of Tally's standard Income/Expense groups (Sales "
