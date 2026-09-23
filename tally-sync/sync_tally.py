@@ -61,6 +61,12 @@ SERVICE_ACCOUNT_PATH = os.path.join(os.path.dirname(__file__), "service-account.
 
 FIRESTORE_COLLECTION = "daily_reports"
 
+# Every Delivery Note Tally has, upserted here regardless of date -- see
+# _delivery_challan_records and push_delivery_challans_to_firestore below.
+# Unlike FIRESTORE_COLLECTION this is not one document per day; it's one
+# document per voucher, kept in sync with Tally on every run.
+DELIVERY_CHALLAN_COLLECTION = "delivery_challans"
+
 REQUEST_TIMEOUT_SECONDS = 120
 
 log = logging.getLogger("tally_sync")
@@ -413,6 +419,86 @@ def _voucher_description(v):
     return ", ".join(other_ledgers[:3])
 
 
+def _delivery_items_summary(v):
+    """Item name + quantity for each stock line on a Delivery Note --
+    what was actually dispatched is the whole point of a Delivery Challan
+    list, unlike _voucher_description above (item names only) which is
+    enough for a Sales/Purchase summary. Falls back to the narration if a
+    voucher somehow has no inventory entries at all.
+    """
+    parts = []
+    for inv in v.findall(".//ALLINVENTORYENTRIES.LIST"):
+        name = (inv.get("NAME") or _text(inv, "STOCKITEMNAME") or "").strip()
+        if not name:
+            continue
+        qty = _text(inv, "ACTUALQTY").strip()
+        parts.append(f"{name} ({qty})" if qty else name)
+    if parts:
+        shown = ", ".join(parts[:4])
+        if len(parts) > 4:
+            shown += f" +{len(parts) - 4} more"
+        return shown
+    return _text(v, "NARRATION").strip()
+
+
+def _tally_date_to_iso(raw):
+    """Tally's own DATE field on a voucher comes back as YYYYMMDD (the same
+    format _fmt_date builds for requests) -- convert to YYYY-MM-DD to match
+    every other date in this file and in Firestore."""
+    raw = raw.strip()
+    if len(raw) != 8 or not raw.isdigit():
+        return raw
+    return f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
+
+
+def _delivery_challan_doc_id(date_iso, voucher_no):
+    """Firestore document IDs can't contain '/', and Tally voucher numbers
+    routinely do (a "24-25/451" numbering series, for instance) -- replace
+    anything that isn't safe in a single path segment so the same voucher
+    always lands on the same document across repeated syncs."""
+    safe_no = re.sub(r"[^A-Za-z0-9_.-]", "_", voucher_no.strip()) or "unknown"
+    return f"{date_iso}_{safe_no}"
+
+
+def _delivery_challan_records(vouchers, type_parents):
+    """Every Delivery Note voucher Tally has, in the shape the dashboard's
+    Pending Delivery Challan list expects.
+
+    Tally has no built-in link between a Delivery Note and whatever Sales
+    Invoice later bills it -- confirmed against real data, where none of
+    this company's Delivery Note vouchers carry a Tracking Number, the only
+    mechanism Tally has for that link (see inspect_delivery_notes.py).
+    "Pending" vs "billed" is therefore not something this can work out on
+    its own: every record here is written with no 'billed' field at all,
+    and a person marks one billed by hand in the dashboard. That field is
+    deliberately absent from what this function returns, and
+    push_delivery_challans_to_firestore below never writes it either -- see
+    that function's docstring for why.
+
+    Delivery Notes routinely carry no ledger amount at all (goods go out,
+    nothing's been billed yet, so there's often nothing to post to a
+    ledger) -- showing a near-always-zero Amount column would look broken,
+    so this reports items+quantity instead, which is what actually answers
+    "what still needs to be billed".
+    """
+    records = []
+    for v in vouchers:
+        vch_type = _text(v, "VOUCHERTYPENAME")
+        if type_parents.get(vch_type.strip().lower()) != "delivery note":
+            continue
+        date_iso = _tally_date_to_iso(_text(v, "DATE"))
+        voucher_no = _text(v, "VOUCHERNUMBER")
+        records.append({
+            "doc_id": _delivery_challan_doc_id(date_iso, voucher_no),
+            "date": date_iso,
+            "voucher_no": voucher_no,
+            "party": _text(v, "PARTYLEDGERNAME"),
+            "type": vch_type,
+            "description": _delivery_items_summary(v),
+        })
+    return records
+
+
 def _filter_by_class(vouchers, type_parents, wanted_parent):
     result = []
     total = 0.0
@@ -659,6 +745,50 @@ def push_to_firestore(date_iso, payload):
     db.collection(FIRESTORE_COLLECTION).document(date_iso).set(payload)
 
 
+def push_delivery_challans_to_firestore(records):
+    """Upserts every Delivery Note into DELIVERY_CHALLAN_COLLECTION, one
+    document per voucher, keyed by _delivery_challan_doc_id so the same
+    voucher always lands on the same document across repeated syncs.
+
+    merge=True is what makes this safe to call on every single run without
+    needing to know whether a document already exists: each record here
+    never includes a 'billed' field, so merge only ever touches
+    date/voucher_no/party/type/description -- a plain overwriting .set()
+    would silently reset a challan someone had already marked billed back
+    to pending on the very next sync, which is exactly the bug this is
+    written to avoid.
+    """
+    import firebase_admin
+    from firebase_admin import credentials, firestore
+
+    if not os.path.exists(SERVICE_ACCOUNT_PATH):
+        raise RuntimeError(
+            f"Service account key not found at {SERVICE_ACCOUNT_PATH}. "
+            "Download it from Firebase Console > Project settings > Service accounts."
+        )
+
+    if not firebase_admin._apps:
+        cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
+        firebase_admin.initialize_app(cred)
+
+    db = firestore.client()
+    batch = db.batch()
+    pending = 0
+    # Firestore caps a single batch at 500 writes -- commit in chunks well
+    # under that rather than assume the challan count never grows past it.
+    for rec in records:
+        doc_id = rec["doc_id"]
+        data = {k: v for k, v in rec.items() if k != "doc_id"}
+        batch.set(db.collection(DELIVERY_CHALLAN_COLLECTION).document(doc_id), data, merge=True)
+        pending += 1
+        if pending >= 400:
+            batch.commit()
+            batch = db.batch()
+            pending = 0
+    if pending:
+        batch.commit()
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -699,17 +829,28 @@ def run(date, dry_run=False, dump_raw_dir=None):
     if not bank_ledgers:
         log.warning("No ledger found under 'Bank Accounts'/'Bank OD A/c' -- bank voucher list will be empty. "
                     "Check the group name matches your Tally chart of accounts.")
-    vouchers = fetch_vouchers_for_date(date, dump_raw_dir)
+    # Fetched once and reused for both today's payload and the full
+    # Delivery Challan list below -- Tally returns its whole voucher
+    # history regardless of date (see _fetch_all_voucher_records), so a
+    # second fetch here would just be the same slow request run twice.
+    all_vouchers = _fetch_all_voucher_records(date, dump_raw_dir)
+    wanted = _fmt_date(date)
+    vouchers = [v for v in all_vouchers if _text(v, "DATE") == wanted]
 
     payload = _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, bank_ledgers, dump_raw_dir)
+    delivery_challans = _delivery_challan_records(all_vouchers, voucher_type_parents)
 
     if dry_run:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
+        print(f"\n{len(delivery_challans)} Delivery Note voucher(s) found (not written, dry run):")
+        print(json.dumps(delivery_challans, indent=2, ensure_ascii=False))
         log.info("Dry run -- nothing written to Firestore.")
         return
 
     push_to_firestore(date_iso, payload)
-    log.info("Written to Firestore: %s/%s", FIRESTORE_COLLECTION, date_iso)
+    push_delivery_challans_to_firestore(delivery_challans)
+    log.info("Written to Firestore: %s/%s (+%d delivery challans upserted)",
+              FIRESTORE_COLLECTION, date_iso, len(delivery_challans))
 
 
 def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
@@ -755,8 +896,16 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
         if cur <= to_date:
             time.sleep(2)
 
-    log.info("Backfill done: %d/%d days written%s.", succeeded, day_count,
-              f", {len(failed)} failed ({', '.join(failed)})" if failed else "")
+    # Delivery Challans aren't date-scoped (see _delivery_challan_records),
+    # so this is derived from the whole fetch above and written once for
+    # the whole backfill, not once per day.
+    all_vouchers = [v for day_vouchers in vouchers_by_date.values() for v in day_vouchers]
+    delivery_challans = _delivery_challan_records(all_vouchers, voucher_type_parents)
+    if not dry_run:
+        push_delivery_challans_to_firestore(delivery_challans)
+
+    log.info("Backfill done: %d/%d days written%s. %d delivery challans upserted.", succeeded, day_count,
+              f", {len(failed)} failed ({', '.join(failed)})" if failed else "", len(delivery_challans))
 
 
 def main():

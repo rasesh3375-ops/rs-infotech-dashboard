@@ -89,6 +89,13 @@
   .table-card{ align-items:stretch; max-height:440px; }
   .table-card .kicker{ margin-bottom:14px; }
   .table-scroll{ overflow-y:auto; max-height:360px; width:100%; }
+  .mark-billed-btn{
+    padding:4px 10px; border-radius:6px; border:1px solid var(--panel-edge); background:var(--bg);
+    color:var(--text); font-family:'Inter',sans-serif; font-size:11.5px; font-weight:600; cursor:pointer;
+    white-space:nowrap;
+  }
+  .mark-billed-btn:hover{ background:var(--ring-track); }
+  .mark-billed-btn:disabled{ opacity:0.55; cursor:default; }
   table.datatable{ width:100%; border-collapse:collapse; font-size:13.5px; }
   table.datatable th{
     text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:0.4px;
@@ -281,6 +288,18 @@
     </div>
   </div>
 
+  <div class="section-label">Pending Delivery Challans</div>
+  <div class="card table-card">
+    <div class="kicker">Delivery challans not yet billed</div>
+    <div class="stat-sub" id="challanCount">Loading…</div>
+    <div class="table-scroll">
+      <table class="datatable" id="challanTable">
+        <thead><tr><th>Date</th><th>Party</th><th>Items</th><th>Voucher No</th><th></th></tr></thead>
+        <tbody id="challanBody"><tr><td colspan="5" class="empty-note">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
   <div class="status-banner" id="statusBanner"></div>
   <div class="footer-note" id="updatedNote">Waiting for first update…</div>
 </div>
@@ -303,6 +322,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 
 const COLLECTION = 'daily_reports';
+const CHALLAN_COLLECTION = 'delivery_challans';
 
 function fmtINR(n){
   n = Math.round(n || 0);
@@ -556,6 +576,90 @@ function detachLiveListener(){
   if (liveUnsubscribe){ liveUnsubscribe(); liveUnsubscribe = null; }
 }
 
+// ---------------------------------------------------------------------
+// Pending Delivery Challans
+// ---------------------------------------------------------------------
+// Not scoped to whatever date is being viewed elsewhere on the dashboard --
+// a Delivery Note stays "pending" for as many days as it takes to get
+// billed, so this is its own always-on list, independent of Today/View
+// date. Tally has no built-in way to tell a billed Delivery Note apart
+// from one nothing's been invoiced against yet (confirmed against real
+// data: none of this company's Delivery Notes carry a Tracking Number,
+// the only mechanism Tally has for that), so sync_tally.py writes every
+// Delivery Note here with no 'billed' field at all, and a person marks one
+// billed by hand -- that's what the button below does. Filtering for
+// "not billed" happens client-side (a Firestore '!=' query would exclude
+// documents missing the field entirely, which is every new challan) --
+// same pattern already used for the P&L period aggregation above.
+let challanUnsubscribe = null;
+function detachChallanListener(){
+  if (challanUnsubscribe){ challanUnsubscribe(); challanUnsubscribe = null; }
+}
+
+function renderChallanTable(rows){
+  const body = document.getElementById('challanBody');
+  document.getElementById('challanCount').textContent =
+    rows.length + ' pending challan' + (rows.length === 1 ? '' : 's');
+  if (rows.length === 0){
+    body.innerHTML = '<tr><td colspan="5" class="empty-note">No pending delivery challans.</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map(r => `
+    <tr data-id="${escapeHtml(r.id)}">
+      <td>${escapeHtml(r.date || '')}</td>
+      <td>${escapeHtml(r.party || '(no party)')}</td>
+      <td>${escapeHtml(r.description || '')}</td>
+      <td>${escapeHtml(r.voucher_no || '')}</td>
+      <td><button class="mark-billed-btn" data-id="${escapeHtml(r.id)}">Mark Billed</button></td>
+    </tr>`).join('');
+}
+
+async function markChallanBilled(docId, btn){
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  try {
+    await db.collection(CHALLAN_COLLECTION).doc(docId).update({
+      billed: true,
+      billed_at: new Date().toISOString(),
+      billed_by: (auth.currentUser && auth.currentUser.email) || null,
+    });
+    // No manual re-render here -- the live listener below sees this same
+    // write come back from Firestore and re-renders the whole list, so the
+    // row just disappears on its own once the update lands.
+  } catch (e){
+    console.error(e);
+    btn.disabled = false;
+    btn.textContent = 'Mark Billed';
+    alert('Could not save -- check your internet connection and try again. (' + (e && e.message) + ')');
+  }
+}
+
+document.getElementById('challanBody').addEventListener('click', (e) => {
+  const btn = e.target.closest('.mark-billed-btn');
+  if (!btn) return;
+  markChallanBilled(btn.dataset.id, btn);
+});
+
+function attachChallanListener(){
+  detachChallanListener();
+  challanUnsubscribe = db.collection(CHALLAN_COLLECTION).onSnapshot(
+    (snap) => {
+      const rows = [];
+      snap.forEach(doc => {
+        const d = doc.data();
+        if (!d.billed) rows.push({ id: doc.id, ...d });
+      });
+      rows.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+      renderChallanTable(rows);
+    },
+    (error) => {
+      console.error(error);
+      document.getElementById('challanBody').innerHTML =
+        '<tr><td colspan="5" class="empty-note">Could not load delivery challans -- check your internet connection.</td></tr>';
+    }
+  );
+}
+
 function setActiveButton(id){
   document.querySelectorAll('.ctrl-btn').forEach(b => b.classList.remove('active'));
   if (id) document.getElementById(id)?.classList.add('active');
@@ -749,6 +853,7 @@ auth.onAuthStateChanged((user) => {
     showScreen('app');
     document.getElementById('pickDate').value = todayISO();
     loadDay(todayISO(), true);
+    attachChallanListener();
   } else if (handlingEmailLink) {
     // Mid sign-in via the emailed link -- leave whatever screen is
     // already showing (checkEmail while it resolves, or login if it just
@@ -758,6 +863,7 @@ auth.onAuthStateChanged((user) => {
   } else {
     showScreen('login');
     detachLiveListener();
+    detachChallanListener();
   }
 });
 </script>
