@@ -67,6 +67,9 @@
     max-height:280px; overflow-y:auto; width:100%; cursor:default;
   }
   .voucher-detail-panel.open{ display:block; }
+  /* Cash, Bank and Delivery Challans fold the same way as Sales/Purchase but
+     run to dozens of rows, so they get more room before scrolling. */
+  .voucher-detail-panel.tall{ max-height:420px; }
 
   .pl-period-row{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px; }
   .pl-period-btn{
@@ -86,9 +89,6 @@
     background:rgba(211,26,20,0.08); color:var(--red); border:1px solid rgba(211,26,20,0.25);
   }
 
-  .table-card{ align-items:stretch; max-height:440px; }
-  .table-card .kicker{ margin-bottom:14px; }
-  .table-scroll{ overflow-y:auto; max-height:360px; width:100%; }
   table.datatable{ width:100%; border-collapse:collapse; font-size:13.5px; }
   table.datatable th{
     text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:0.4px;
@@ -260,9 +260,11 @@
   </div>
 
   <div class="section-label">Cash Vouchers</div>
-  <div class="card table-card">
+  <div class="card expandable" id="cashCard">
     <div class="kicker">Cash vouchers</div>
-    <div class="table-scroll">
+    <div class="stat-sub" id="cashSummary">Waiting for first update…</div>
+    <div class="tap-hint">Tap for voucher-wise detail</div>
+    <div class="voucher-detail-panel tall" id="cashDetail">
       <table class="datatable" id="cashTable">
         <thead><tr><th>Party</th><th>Description</th><th>Type</th><th></th><th class="num-col">Amount</th></tr></thead>
         <tbody id="cashBody"><tr><td colspan="5" class="empty-note">Waiting for first update…</td></tr></tbody>
@@ -271,9 +273,11 @@
   </div>
 
   <div class="section-label">Bank Transactions</div>
-  <div class="card table-card">
+  <div class="card expandable" id="bankCard">
     <div class="kicker">Bank transactions</div>
-    <div class="table-scroll">
+    <div class="stat-sub" id="bankSummary">Waiting for first update…</div>
+    <div class="tap-hint">Tap for transaction-wise detail</div>
+    <div class="voucher-detail-panel tall" id="bankDetail">
       <table class="datatable" id="bankTable">
         <thead><tr><th>Party</th><th>Description</th><th>Type</th><th></th><th class="num-col">Amount</th></tr></thead>
         <tbody id="bankBody"><tr><td colspan="5" class="empty-note">Waiting for first update…</td></tr></tbody>
@@ -282,10 +286,11 @@
   </div>
 
   <div class="section-label">Pending Delivery Challans</div>
-  <div class="card table-card">
+  <div class="card expandable" id="challanCard">
     <div class="kicker">Delivery challans still open in Tally</div>
     <div class="stat-sub" id="challanCount">Loading…</div>
-    <div class="table-scroll">
+    <div class="tap-hint">Tap for challan-wise detail</div>
+    <div class="voucher-detail-panel tall" id="challanDetail">
       <table class="datatable" id="challanTable">
         <thead><tr><th>Date</th><th>Party</th><th>Items</th><th>Voucher No</th></tr></thead>
         <tbody id="challanBody"><tr><td colspan="4" class="empty-note">Loading…</td></tr></tbody>
@@ -368,6 +373,19 @@ function renderMoneyTable(bodyId, rows, emptyText){
   }).join('');
 }
 
+// The line a folded Cash/Bank card shows: how many, and the In and Out
+// totals of the same rows the table lists (In/Out as the table tags them).
+function moneySummary(rows, noun){
+  rows = rows || [];
+  let moneyIn = 0, moneyOut = 0;
+  for (const v of rows){
+    if (v.direction === 'cash_in' || v.direction === 'bank_in') moneyIn += v.amount || 0;
+    else moneyOut += v.amount || 0;
+  }
+  const count = rows.length + ' ' + noun + (rows.length === 1 ? '' : 's');
+  return rows.length ? count + ' · In ' + fmtINR(moneyIn) + ' · Out ' + fmtINR(moneyOut) : count;
+}
+
 function renderVoucherDetailTable(bodyId, rows){
   const body = document.getElementById(bodyId);
   if (!rows || rows.length === 0){
@@ -408,6 +426,8 @@ function applyData(data){
 
   renderMoneyTable('cashBody', cash.vouchers, 'No cash vouchers for this day.');
   renderMoneyTable('bankBody', bank.vouchers, 'No bank transactions for this day.');
+  document.getElementById('cashSummary').textContent = moneySummary(cash.vouchers, 'voucher');
+  document.getElementById('bankSummary').textContent = moneySummary(bank.vouchers, 'transaction');
 }
 
 // ---------------------------------------------------------------------
@@ -671,6 +691,9 @@ function wireExpandableCard(cardId, panelId){
 }
 wireExpandableCard('salesCard', 'salesDetail');
 wireExpandableCard('purchaseCard', 'purchaseDetail');
+wireExpandableCard('cashCard', 'cashDetail');
+wireExpandableCard('bankCard', 'bankDetail');
+wireExpandableCard('challanCard', 'challanDetail');
 
 document.getElementById('btnToday').addEventListener('click', () => {
   setActiveButton('btnToday');
