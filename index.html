@@ -28,38 +28,39 @@
     margin:0; height:100%; background:var(--bg); color:var(--text);
     font-family:'Inter',-apple-system,'Segoe UI',Roboto,Arial,sans-serif;
   }
-  .wrap{ max-width:1320px; margin:0 auto; padding: 32px 28px 40px; }
-  header{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:28px; flex-wrap:wrap; gap:10px; }
-  h1{ font-size:24px; font-weight:700; margin:0; letter-spacing:0.2px; color:var(--black); }
+  .wrap{ max-width:1320px; margin:0 auto; padding: 16px 24px 20px; }
+  header{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:12px; flex-wrap:wrap; gap:10px; }
+  h1{ font-size:21px; font-weight:700; margin:0; letter-spacing:0.2px; color:var(--black); }
   .clock{ font-family:'JetBrains Mono',Consolas,'Cascadia Mono','Courier New',monospace; font-size:15px; color:var(--text-dim); }
 
-  .section-label{ font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:0.6px; color:var(--text-dim); margin:30px 2px 12px; }
-  .section-label:first-of-type{ margin-top:0; }
-
-  .row2{ display:grid; grid-template-columns:repeat(2, 1fr); gap:20px; }
-  @media (max-width: 700px){ .row2{ grid-template-columns:1fr; } }
-  .row3{ display:grid; grid-template-columns:repeat(3, 1fr); gap:20px; }
-  @media (max-width: 900px){ .row3{ grid-template-columns:1fr; } }
+  /* Six equal tiles, three to a row on a laptop or desktop, so the whole
+     dashboard fits one screen with every tile folded. A tile that's opened
+     takes the full row instead, so its table gets the width it needs; the
+     tiles after it move down a row but keep their order. */
+  .dash-grid{ display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:14px; }
+  .dash-grid .card.open{ grid-column:1 / -1; }
+  @media (max-width: 1000px){ .dash-grid{ grid-template-columns:repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 640px){ .dash-grid{ grid-template-columns:1fr; } }
 
   .card{
     background:var(--panel); border:1px solid var(--panel-edge); border-radius:14px;
     box-shadow:0 1px 3px rgba(17,17,17,0.06), 0 8px 24px rgba(17,17,17,0.04);
-    padding:22px; display:flex; flex-direction:column;
+    padding:16px 18px; display:flex; flex-direction:column;
     position:relative; overflow:hidden;
   }
   .card .kicker{
     font-size:13px; letter-spacing:0.3px; text-transform:uppercase;
-    color:var(--text-dim); margin-bottom:10px; font-weight:700;
+    color:var(--text-dim); margin-bottom:8px; font-weight:700;
   }
   .stat-count{
     font-family:'JetBrains Mono',Consolas,'Cascadia Mono','Courier New',monospace;
-    font-size:38px; font-weight:800; line-height:1; color:var(--black);
+    font-size:30px; font-weight:800; line-height:1; color:var(--black);
   }
   .stat-count.negative{ color:var(--red); }
-  .stat-sub{ font-size:12.5px; color:var(--text-dim); margin-top:8px; }
+  .stat-sub{ font-size:12.5px; color:var(--text-dim); margin-top:6px; }
 
   .card.expandable{ cursor:pointer; }
-  .card.expandable .tap-hint{ font-size:11px; color:var(--text-dim); margin-top:10px; }
+  .card.expandable .tap-hint{ font-size:11px; color:var(--text-dim); margin-top:6px; }
   .card.expandable .tap-hint::after{ content:'▾'; margin-left:5px; display:inline-block; transition:transform 0.15s ease; }
   .card.expandable.open .tap-hint::after{ transform:rotate(180deg); }
   .voucher-detail-panel{
@@ -67,25 +68,24 @@
     max-height:280px; overflow-y:auto; width:100%; cursor:default;
   }
   .voucher-detail-panel.open{ display:block; }
-  /* Cash, Bank and Delivery Challans fold the same way as Sales/Purchase but
-     run to dozens of rows, so they get more room before scrolling. */
+  /* Cash, Bank and Delivery Challans run to dozens of rows, so they get more
+     room before scrolling. */
   .voucher-detail-panel.tall{ max-height:420px; }
 
-  .pl-period-row{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px; }
+  .pl-period-row{ display:flex; flex-wrap:wrap; gap:4px; margin-bottom:10px; }
   .pl-period-btn{
-    padding:6px 12px; border-radius:7px; border:1px solid var(--panel-edge); background:var(--bg);
-    color:var(--text); font-family:'Inter',sans-serif; font-size:12.5px; font-weight:600; cursor:pointer;
+    padding:3px 7px; border-radius:6px; border:1px solid var(--panel-edge); background:var(--bg);
+    color:var(--text); font-family:'Inter',sans-serif; font-size:11px; font-weight:600; cursor:pointer;
   }
   .pl-period-btn:hover{ background:var(--ring-track); }
   .pl-period-btn.active{ background:var(--blue); color:#fff; border-color:var(--blue); }
-  .pl-range-label{ font-size:12.5px; color:var(--text-dim); margin-top:8px; }
+  .pl-range-label{ font-size:12.5px; color:var(--text-dim); margin-top:6px; }
 
-  .pl-card .stat-count{ font-size:44px; }
-  .pl-breakdown{ display:flex; gap:22px; margin-top:14px; }
+    .pl-breakdown{ display:flex; gap:22px; margin-top:14px; }
   .pl-breakdown div{ font-size:13px; color:var(--text-dim); }
   .pl-breakdown b{ display:block; font-family:'JetBrains Mono',monospace; font-size:16px; color:var(--black); font-weight:700; }
   .review-flag{
-    margin-top:14px; padding:9px 12px; border-radius:8px; font-size:12.5px;
+    margin-top:8px; padding:7px 10px; border-radius:8px; font-size:12px;
     background:rgba(211,26,20,0.08); color:var(--red); border:1px solid rgba(211,26,20,0.25);
   }
 
@@ -104,13 +104,13 @@
   .empty-note{ font-size:13px; color:var(--text-dim); padding:18px 4px; text-align:center; }
 
   .status-banner{
-    margin-top:22px; padding:11px 16px; border-radius:10px; font-size:13px;
+    margin-top:12px; padding:9px 14px; border-radius:10px; font-size:13px;
     display:none; align-items:center; gap:8px; background:rgba(211,26,20,0.08); color:var(--red);
     border:1px solid rgba(211,26,20,0.25);
   }
   .status-banner.show{ display:flex; }
-  .brand-bar{ height:6px; border-radius:3px; margin-bottom:24px; background:linear-gradient(90deg, var(--blue), var(--black)); }
-  .footer-note{ margin-top:26px; font-size:12px; color:var(--text-dim); text-align:center; }
+  .brand-bar{ height:6px; border-radius:3px; margin-bottom:12px; background:linear-gradient(90deg, var(--blue), var(--black)); }
+  .footer-note{ margin-top:12px; font-size:12px; color:var(--text-dim); text-align:center; }
 
   #loginScreen, #checkEmailScreen{ min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
   .login-card{
@@ -143,10 +143,10 @@
 
   .controls-bar{
     display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:8px;
-    padding:14px 16px; background:var(--panel); border:1px solid var(--panel-edge); border-radius:12px;
+    padding:8px 12px; background:var(--panel); border:1px solid var(--panel-edge); border-radius:12px;
   }
   .ctrl-btn{
-    padding:8px 14px; border-radius:8px; border:1px solid var(--panel-edge); background:var(--bg);
+    padding:6px 12px; border-radius:8px; border:1px solid var(--panel-edge); background:var(--bg);
     color:var(--text); font-family:'Inter',sans-serif; font-size:13px; font-weight:600; cursor:pointer;
   }
   .ctrl-btn:hover{ background:var(--ring-track); }
@@ -155,7 +155,7 @@
     padding:7px 10px; border-radius:8px; border:1px solid var(--panel-edge); background:var(--bg);
     color:var(--text); font-family:'Inter',sans-serif; font-size:13px;
   }
-  .view-label{ font-size:13px; color:var(--text-dim); margin:0 2px 22px; display:flex; align-items:center; gap:8px; }
+  .view-label{ font-size:13px; color:var(--text-dim); margin:0 2px 12px; display:flex; align-items:center; gap:8px; }
   .view-label .live-dot{
     width:7px; height:7px; border-radius:50%; background:var(--teal); display:inline-block;
     animation: pulse 1.6s ease-in-out infinite;
@@ -215,8 +215,7 @@
   </div>
   <div class="view-label" id="viewLabel"><span class="live-dot"></span> Showing: Today (live)</div>
 
-  <div class="section-label">Sales &amp; Purchase</div>
-  <div class="row2">
+  <div class="dash-grid">
     <div class="card expandable" id="salesCard">
       <div class="kicker">Daily Sales</div>
       <div class="stat-count" id="salesTotal">₹0</div>
@@ -229,6 +228,7 @@
         </table>
       </div>
     </div>
+
     <div class="card expandable" id="purchaseCard">
       <div class="kicker">Daily Purchase</div>
       <div class="stat-count" id="purchaseTotal">₹0</div>
@@ -241,60 +241,59 @@
         </table>
       </div>
     </div>
-  </div>
 
-  <div class="section-label">Profit &amp; Loss</div>
-  <div class="card pl-card">
-    <div class="kicker">Net profit / loss</div>
-    <div class="pl-period-row" id="plPeriodRow">
-      <button class="pl-period-btn active" data-period="daily">Daily</button>
-      <button class="pl-period-btn" data-period="weekly">Weekly</button>
-      <button class="pl-period-btn" data-period="monthly">Monthly</button>
-      <button class="pl-period-btn" data-period="quarterly">Quarterly</button>
-      <button class="pl-period-btn" data-period="half_yearly">Half-Yearly</button>
-      <button class="pl-period-btn" data-period="yearly">Yearly</button>
+    <div class="card pl-card">
+      <div class="kicker">Net profit / loss</div>
+      <div class="pl-period-row" id="plPeriodRow">
+        <button class="pl-period-btn active" data-period="daily">Daily</button>
+        <button class="pl-period-btn" data-period="weekly">Weekly</button>
+        <button class="pl-period-btn" data-period="monthly">Monthly</button>
+        <button class="pl-period-btn" data-period="quarterly">Quarterly</button>
+        <button class="pl-period-btn" data-period="half_yearly">Half-Yearly</button>
+        <button class="pl-period-btn" data-period="yearly">Yearly</button>
+      </div>
+      <div class="stat-count" id="plAmount">₹0</div>
+      <div class="pl-range-label" id="plRangeLabel"></div>
+      <div class="review-flag" id="plReviewFlag" style="display:none;"></div>
     </div>
-    <div class="stat-count" id="plAmount">₹0</div>
-    <div class="pl-range-label" id="plRangeLabel"></div>
-    <div class="review-flag" id="plReviewFlag" style="display:none;"></div>
-  </div>
 
-  <div class="section-label">Cash Vouchers</div>
-  <div class="card expandable" id="cashCard">
-    <div class="kicker">Cash vouchers</div>
-    <div class="stat-sub" id="cashSummary">Waiting for first update…</div>
-    <div class="tap-hint">Tap for voucher-wise detail</div>
-    <div class="voucher-detail-panel tall" id="cashDetail">
-      <table class="datatable" id="cashTable">
-        <thead><tr><th>Party</th><th>Description</th><th>Type</th><th></th><th class="num-col">Amount</th></tr></thead>
-        <tbody id="cashBody"><tr><td colspan="5" class="empty-note">Waiting for first update…</td></tr></tbody>
-      </table>
+    <div class="card expandable" id="cashCard">
+      <div class="kicker">Cash Vouchers</div>
+      <div class="stat-count" id="cashTotal">0</div>
+      <div class="stat-sub" id="cashSummary">vouchers</div>
+      <div class="tap-hint">Tap for voucher-wise detail</div>
+      <div class="voucher-detail-panel tall" id="cashDetail">
+        <table class="datatable" id="cashTable">
+          <thead><tr><th>Party</th><th>Description</th><th>Type</th><th></th><th class="num-col">Amount</th></tr></thead>
+          <tbody id="cashBody"><tr><td colspan="5" class="empty-note">Waiting for first update…</td></tr></tbody>
+        </table>
+      </div>
     </div>
-  </div>
 
-  <div class="section-label">Bank Transactions</div>
-  <div class="card expandable" id="bankCard">
-    <div class="kicker">Bank transactions</div>
-    <div class="stat-sub" id="bankSummary">Waiting for first update…</div>
-    <div class="tap-hint">Tap for transaction-wise detail</div>
-    <div class="voucher-detail-panel tall" id="bankDetail">
-      <table class="datatable" id="bankTable">
-        <thead><tr><th>Party</th><th>Description</th><th>Type</th><th></th><th class="num-col">Amount</th></tr></thead>
-        <tbody id="bankBody"><tr><td colspan="5" class="empty-note">Waiting for first update…</td></tr></tbody>
-      </table>
+    <div class="card expandable" id="bankCard">
+      <div class="kicker">Bank Transactions</div>
+      <div class="stat-count" id="bankTotal">0</div>
+      <div class="stat-sub" id="bankSummary">transactions</div>
+      <div class="tap-hint">Tap for transaction-wise detail</div>
+      <div class="voucher-detail-panel tall" id="bankDetail">
+        <table class="datatable" id="bankTable">
+          <thead><tr><th>Party</th><th>Description</th><th>Type</th><th></th><th class="num-col">Amount</th></tr></thead>
+          <tbody id="bankBody"><tr><td colspan="5" class="empty-note">Waiting for first update…</td></tr></tbody>
+        </table>
+      </div>
     </div>
-  </div>
 
-  <div class="section-label">Pending Delivery Challans</div>
-  <div class="card expandable" id="challanCard">
-    <div class="kicker">Delivery challans still open in Tally</div>
-    <div class="stat-sub" id="challanCount">Loading…</div>
-    <div class="tap-hint">Tap for challan-wise detail</div>
-    <div class="voucher-detail-panel tall" id="challanDetail">
-      <table class="datatable" id="challanTable">
-        <thead><tr><th>Date</th><th>Party</th><th>Items</th><th>Voucher No</th></tr></thead>
-        <tbody id="challanBody"><tr><td colspan="4" class="empty-note">Loading…</td></tr></tbody>
-      </table>
+    <div class="card expandable" id="challanCard">
+      <div class="kicker">Pending Delivery Challans</div>
+      <div class="stat-count" id="challanTotal">–</div>
+      <div class="stat-sub" id="challanCount">Loading…</div>
+      <div class="tap-hint">Tap for challan-wise detail</div>
+      <div class="voucher-detail-panel tall" id="challanDetail">
+        <table class="datatable" id="challanTable">
+          <thead><tr><th>Date</th><th>Party</th><th>Items</th><th>Voucher No</th></tr></thead>
+          <tbody id="challanBody"><tr><td colspan="4" class="empty-note">Loading…</td></tr></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -373,17 +372,19 @@ function renderMoneyTable(bodyId, rows, emptyText){
   }).join('');
 }
 
-// The line a folded Cash/Bank card shows: how many, and the In and Out
-// totals of the same rows the table lists (In/Out as the table tags them).
-function moneySummary(rows, noun){
+// What a folded Cash/Bank tile shows: the count as its big figure, and the
+// In and Out totals of the same rows the table lists (In/Out as the table
+// tags them) underneath.
+function renderMoneySummary(countId, subId, rows, noun){
   rows = rows || [];
   let moneyIn = 0, moneyOut = 0;
   for (const v of rows){
     if (v.direction === 'cash_in' || v.direction === 'bank_in') moneyIn += v.amount || 0;
     else moneyOut += v.amount || 0;
   }
-  const count = rows.length + ' ' + noun + (rows.length === 1 ? '' : 's');
-  return rows.length ? count + ' · In ' + fmtINR(moneyIn) + ' · Out ' + fmtINR(moneyOut) : count;
+  document.getElementById(countId).textContent = rows.length;
+  document.getElementById(subId).textContent =
+    noun + (rows.length === 1 ? '' : 's') + ' · In ' + fmtINR(moneyIn) + ' · Out ' + fmtINR(moneyOut);
 }
 
 function renderVoucherDetailTable(bodyId, rows){
@@ -426,8 +427,8 @@ function applyData(data){
 
   renderMoneyTable('cashBody', cash.vouchers, 'No cash vouchers for this day.');
   renderMoneyTable('bankBody', bank.vouchers, 'No bank transactions for this day.');
-  document.getElementById('cashSummary').textContent = moneySummary(cash.vouchers, 'voucher');
-  document.getElementById('bankSummary').textContent = moneySummary(bank.vouchers, 'transaction');
+  renderMoneySummary('cashTotal', 'cashSummary', cash.vouchers, 'voucher');
+  renderMoneySummary('bankTotal', 'bankSummary', bank.vouchers, 'transaction');
 }
 
 // ---------------------------------------------------------------------
@@ -610,8 +611,9 @@ function detachChallanListener(){
 
 function renderChallanTable(rows){
   const body = document.getElementById('challanBody');
+  document.getElementById('challanTotal').textContent = rows.length;
   document.getElementById('challanCount').textContent =
-    rows.length + ' pending challan' + (rows.length === 1 ? '' : 's');
+    'pending challan' + (rows.length === 1 ? '' : 's');
   if (rows.length === 0){
     body.innerHTML = '<tr><td colspan="4" class="empty-note">No pending delivery challans.</td></tr>';
     return;
