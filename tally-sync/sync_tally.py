@@ -77,6 +77,13 @@ DELIVERY_CHALLAN_COLLECTION = "delivery_challans"
 PERIOD_COLLECTION = "period_reports"
 PERIOD_NAMES = ("weekly", "monthly", "quarterly", "half_yearly", "yearly")
 
+# Every Proforma Invoice Tally still has, whatever its date, as one document
+# -- see _pending_proforma_records and push_pending_proformas. It lives in
+# PERIOD_COLLECTION only because the Firestore rules already let the
+# dashboard read that collection; a collection of its own would need the
+# rules edited by hand in the Firebase console first.
+PENDING_PROFORMA_DOC = "pending_proforma_invoices"
+
 REQUEST_TIMEOUT_SECONDS = 120
 
 log = logging.getLogger("tally_sync")
@@ -526,6 +533,30 @@ def _is_proforma(voucher_type_name):
     return any(word in letters for word in ("proforma", "performa", "perfoma"))
 
 
+def _pending_proforma_records(vouchers):
+    """Every Proforma Invoice in this fetch, for the dashboard's Proforma
+    Invoice (Pending for Invoice) list. "Pending" means what it means for
+    Delivery Challans (see _delivery_challan_records): still a Proforma
+    Invoice in Tally. Once it's deleted there, or turned into a Tax Invoice,
+    the next sync drops it. Unlike a Delivery Note, a proforma carries its
+    amount, so that's kept."""
+    records = []
+    for v in vouchers:
+        vch_type = _text(v, "VOUCHERTYPENAME")
+        if not _is_proforma(vch_type):
+            continue
+        records.append({
+            "date": _tally_date_to_iso(_text(v, "DATE")),
+            "voucher_no": _text(v, "VOUCHERNUMBER"),
+            "party": _text(v, "PARTYLEDGERNAME"),
+            "type": vch_type,
+            "amount": round(_voucher_amount(v), 2),
+            "description": _voucher_description(v),
+        })
+    records.sort(key=lambda r: (r["date"], r["voucher_no"]))
+    return records
+
+
 def _filter_by_class(vouchers, type_parents, wanted_parent, proforma=False):
     """Vouchers whose type has wanted_parent as its base type, with their
     bill totals (GST included). proforma=False leaves Proforma Invoices
@@ -806,6 +837,28 @@ def push_to_firestore(date_iso, payload):
     db.collection(FIRESTORE_COLLECTION).document(date_iso).set(payload)
 
 
+def push_pending_proformas(records, covered_from):
+    """Replaces the pending Proforma list with what Tally has now, keeping
+    any entry dated before covered_from -- the same limit as the Delivery
+    Challans below: Tally only hands back the current financial year, so on
+    1 April a proforma from March is out of view, not deleted, and has to
+    stay listed. Unlike the challans an empty list is written as it is:
+    proformas are picked by name, not by a classification that could fail,
+    and a fetch with no vouchers at all has already been refused, so none
+    found means none pending. Returns how many are listed."""
+    doc_ref = _firestore_db().collection(PERIOD_COLLECTION).document(PENDING_PROFORMA_DOC)
+    before = doc_ref.get()
+    earlier = [r for r in ((before.to_dict() or {}).get("proformas") or [] if before.exists else [])
+               if (r.get("date") or "") < covered_from]
+    listed = earlier + records
+    doc_ref.set({
+        "synced_at": datetime.datetime.now().isoformat(),
+        "covered_from": covered_from,
+        "proformas": listed,
+    })
+    return len(listed)
+
+
 def push_delivery_challans_to_firestore(records, covered_from):
     """Makes DELIVERY_CHALLAN_COLLECTION a copy of the Delivery Notes Tally
     has now: writes each one whole, one document per voucher keyed by
@@ -1036,19 +1089,24 @@ def run(date, dry_run=False, dump_raw_dir=None):
 
     payload = _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, bank_ledgers, dump_raw_dir)
     delivery_challans = _delivery_challan_records(all_vouchers, voucher_type_parents)
+    proformas = _pending_proforma_records(all_vouchers)
 
     if dry_run:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         print(f"\n{len(delivery_challans)} Delivery Note voucher(s) found (not written, dry run):")
         print(json.dumps(delivery_challans, indent=2, ensure_ascii=False))
+        print(f"\n{len(proformas)} Proforma Invoice(s) found (not written, dry run):")
+        print(json.dumps(proformas, indent=2, ensure_ascii=False))
         sync_period_reports(date, date, dry_run=True, dump_raw_dir=dump_raw_dir)
         log.info("Dry run -- nothing written to Firestore.")
         return
 
     push_to_firestore(date_iso, payload)
     removed = push_delivery_challans_to_firestore(delivery_challans, _earliest_voucher_date(all_vouchers))
-    log.info("Written to Firestore: %s/%s (+%d delivery challans upserted, %d no longer in Tally removed)",
-              FIRESTORE_COLLECTION, date_iso, len(delivery_challans), removed)
+    listed = push_pending_proformas(proformas, _earliest_voucher_date(all_vouchers))
+    log.info("Written to Firestore: %s/%s (+%d delivery challans upserted, %d no longer in Tally removed; "
+              "%d pending proforma invoices)",
+              FIRESTORE_COLLECTION, date_iso, len(delivery_challans), removed, listed)
     sync_period_reports(date, date, dump_raw_dir=dump_raw_dir)
 
 
@@ -1103,13 +1161,17 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
     # the whole backfill, not once per day.
     all_vouchers = [v for day_vouchers in vouchers_by_date.values() for v in day_vouchers]
     delivery_challans = _delivery_challan_records(all_vouchers, voucher_type_parents)
+    proformas = _pending_proforma_records(all_vouchers)
     removed = 0
+    listed = len(proformas)
     if not dry_run:
         removed = push_delivery_challans_to_firestore(delivery_challans, _earliest_voucher_date(all_vouchers))
+        listed = push_pending_proformas(proformas, _earliest_voucher_date(all_vouchers))
 
-    log.info("Backfill done: %d/%d days written%s. %d delivery challans upserted, %d no longer in Tally removed.",
+    log.info("Backfill done: %d/%d days written%s. %d delivery challans upserted, %d no longer in Tally removed. "
+              "%d pending proforma invoices.",
               succeeded, day_count, f", {len(failed)} failed ({', '.join(failed)})" if failed else "",
-              len(delivery_challans), removed)
+              len(delivery_challans), removed, listed)
     sync_period_reports(from_date, to_date, dry_run=dry_run, dump_raw_dir=dump_raw_dir)
 
 

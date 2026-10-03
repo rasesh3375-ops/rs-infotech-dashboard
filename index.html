@@ -36,7 +36,8 @@
   /* Seven equal tiles, four to a row on a laptop or desktop, so the whole
      dashboard still fits one screen in two rows with every tile folded --
      the Proforma tile made it seven, and three to a row would have needed a
-     third. A tile that's opened takes the full row instead, so its table
+     third. The two pending lists, which don't follow the period bar, sit
+     together at the end. A tile that's opened takes the full row instead, so its table
      gets the width it needs; the tiles after it move down a row but keep
      their order. */
   .dash-grid{ display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:14px; }
@@ -259,19 +260,6 @@
       </div>
     </div>
 
-    <div class="card expandable" id="proformaCard">
-      <div class="kicker">Proforma Invoices</div>
-      <div class="stat-count" id="proformaTotal">₹0</div>
-      <div class="stat-sub" id="proformaCount">0 vouchers</div>
-      <div class="tap-hint">Tap for customer-wise detail</div>
-      <div class="voucher-detail-panel" id="proformaDetail">
-        <table class="datatable">
-          <thead><tr><th class="date-col">Date</th><th>Party</th><th>Description</th><th>Type</th><th class="num-col">Amount</th></tr></thead>
-          <tbody id="proformaDetailBody"></tbody>
-        </table>
-      </div>
-    </div>
-
     <div class="card expandable" id="purchaseCard">
       <div class="kicker" id="purchaseKicker">Purchase</div>
       <div class="stat-count" id="purchaseTotal">₹0</div>
@@ -330,6 +318,19 @@
         </table>
       </div>
     </div>
+
+    <div class="card expandable" id="proformaCard">
+      <div class="kicker">Proforma Invoice (Pending for Invoice)</div>
+      <div class="stat-count" id="proformaTotal">–</div>
+      <div class="stat-sub" id="proformaCount">Loading…</div>
+      <div class="tap-hint">Tap for proforma-wise detail</div>
+      <div class="voucher-detail-panel tall" id="proformaDetail">
+        <table class="datatable">
+          <thead><tr><th>Date</th><th>Party</th><th>Description</th><th>Voucher No</th><th class="num-col">Amount</th></tr></thead>
+          <tbody id="proformaBody"><tr><td colspan="5" class="empty-note">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
   <div class="status-banner" id="statusBanner"></div>
@@ -356,6 +357,7 @@ const auth = firebase.auth();
 const COLLECTION = 'daily_reports';
 const CHALLAN_COLLECTION = 'delivery_challans';
 const PERIOD_COLLECTION = 'period_reports';
+const PENDING_PROFORMA_DOC = 'pending_proforma_invoices';
 
 function fmtINR(n){
   n = Math.round(n || 0);
@@ -445,9 +447,9 @@ function renderVoucherDetailTable(bodyId, rows, emptyText){
 
 // Days synced before Proforma Invoices were kept apart have them inside
 // Sales. Until the sync rewrites those days (run_daily_sync.ps1 re-syncs
-// the whole year on its next run but one), they are moved out here, by
+// the whole year on its next run but one), they are taken out here, by
 // the same voucher-type name sync_tally.py's _is_proforma matches, so
-// neither tile counts them twice or mixes them up in the meantime.
+// Sales doesn't count them in the meantime.
 function withProformaApart(day){
   if (day.proforma || !day.sales) return day;
   const isProforma = (v) => /proforma|performa|perfoma/.test((v.type || '').toLowerCase().replace(/[^a-z]/g, ''));
@@ -476,7 +478,7 @@ function renderSalesLike(prefix, title, x, booksAmount, emptyWhat){
   renderVoucherDetailTable(prefix + 'DetailBody', x.vouchers, 'No vouchers ' + emptyWhat + '.');
 }
 
-// Sales, Proforma, Purchase, Cash and Bank for whatever the period bar is
+// Sales, Purchase, Cash and Bank for whatever the period bar is
 // showing. For one day that's the day's document as synced; for a longer
 // period it's those days added together (loadPeriodTotals), each voucher
 // carrying its date for the Date column. Adding days up is right for these
@@ -485,7 +487,6 @@ function renderSalesLike(prefix, title, x, booksAmount, emptyWhat){
 function renderTiles(data, emptyWhat){
   const empty = { total: 0, count: 0, vouchers: [] };
   const sales = data.sales || empty;
-  const proforma = data.proforma || empty;
   const purchase = data.purchase || empty;
   const cash = data.cash_vouchers || { vouchers: [] };
   const bank = data.bank_vouchers || { vouchers: [] };
@@ -493,10 +494,6 @@ function renderTiles(data, emptyWhat){
 
   renderSalesLike('sales', 'Sales', sales, books.sales_accounts, emptyWhat);
   renderSalesLike('purchase', 'Purchase', purchase, books.purchase_accounts, emptyWhat);
-  document.getElementById('proformaTotal').textContent = fmtINR(proforma.total);
-  document.getElementById('proformaCount').textContent =
-    proforma.count + ' voucher' + (proforma.count === 1 ? '' : 's') + ' · with GST · not in Sales';
-  renderVoucherDetailTable('proformaDetailBody', proforma.vouchers, 'No proforma invoices ' + emptyWhat + '.');
   renderMoneyTable('cashBody', cash.vouchers, 'No cash vouchers ' + emptyWhat + '.');
   renderMoneyTable('bankBody', bank.vouchers, 'No bank transactions ' + emptyWhat + '.');
   renderMoneySummary('cashTotal', 'cashSummary', cash.vouchers, 'voucher');
@@ -715,6 +712,61 @@ function attachChallanListener(){
   );
 }
 
+// ---------------------------------------------------------------------
+// Proforma Invoice (Pending for Invoice)
+// ---------------------------------------------------------------------
+// The same idea as the Delivery Challans above: every Proforma Invoice
+// still in Tally, whatever its date and whatever the period bar says, kept
+// by sync_tally.py (push_pending_proformas) and dropped there once it's
+// deleted or turned into a Tax Invoice. One document holds the whole list.
+let proformaUnsubscribe = null;
+function detachProformaListener(){
+  if (proformaUnsubscribe){ proformaUnsubscribe(); proformaUnsubscribe = null; }
+}
+
+function renderProformaTable(rows){
+  const body = document.getElementById('proformaBody');
+  const value = rows.reduce((t, r) => t + (r.amount || 0), 0);
+  document.getElementById('proformaTotal').textContent = rows.length;
+  document.getElementById('proformaCount').textContent =
+    'pending proforma' + (rows.length === 1 ? '' : 's') + ' · ' + fmtINR(value) + ' with GST';
+  if (rows.length === 0){
+    body.innerHTML = '<tr><td colspan="5" class="empty-note">No pending proforma invoices.</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map(r => `
+    <tr>
+      <td>${escapeHtml(r.date || '')}</td>
+      <td>${escapeHtml(r.party || '(no party)')}</td>
+      <td>${escapeHtml(r.description || '')}</td>
+      <td>${escapeHtml(r.voucher_no || '')}</td>
+      <td class="num-col">${fmtINR(r.amount)}</td>
+    </tr>`).join('');
+}
+
+function attachProformaListener(){
+  detachProformaListener();
+  proformaUnsubscribe = db.collection(PERIOD_COLLECTION).doc(PENDING_PROFORMA_DOC).onSnapshot(
+    (doc) => {
+      if (!doc.exists){
+        document.getElementById('proformaTotal').textContent = '–';
+        document.getElementById('proformaCount').textContent = 'Not synced from Tally yet';
+        document.getElementById('proformaBody').innerHTML =
+          '<tr><td colspan="5" class="empty-note">The list appears after the next sync.</td></tr>';
+        return;
+      }
+      const rows = [...((doc.data() || {}).proformas || [])];
+      rows.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+      renderProformaTable(rows);
+    },
+    (error) => {
+      console.error(error);
+      document.getElementById('proformaBody').innerHTML =
+        '<tr><td colspan="5" class="empty-note">Could not load proforma invoices -- check your internet connection.</td></tr>';
+    }
+  );
+}
+
 function setActiveButton(id){
   document.querySelectorAll('.ctrl-btn').forEach(b => b.classList.remove('active'));
   if (id) document.getElementById(id)?.classList.add('active');
@@ -804,7 +856,7 @@ async function loadPeriodTotals(period, fromIso, toIso, token){
   try {
     const snaps = await Promise.all(dates.map(d => db.collection(COLLECTION).doc(d).get()));
     if (token !== viewToken) return;
-    const total = { sales: { total: 0, count: 0, vouchers: [] }, proforma: { total: 0, count: 0, vouchers: [] },
+    const total = { sales: { total: 0, count: 0, vouchers: [] },
                     purchase: { total: 0, count: 0, vouchers: [] },
                     cash_vouchers: { vouchers: [] }, bank_vouchers: { vouchers: [] },
                     books: { sales_accounts: 0, purchase_accounts: 0 } };
@@ -820,7 +872,7 @@ async function loadPeriodTotals(period, fromIso, toIso, token){
         total.books.sales_accounts += books.sales_accounts;
         total.books.purchase_accounts += books.purchase_accounts;
       }
-      for (const k of ['sales', 'proforma', 'purchase']){
+      for (const k of ['sales', 'purchase']){
         const x = day[k] || {};
         total[k].total += x.total || 0;
         total[k].count += x.count || 0;
@@ -1017,6 +1069,7 @@ auth.onAuthStateChanged((user) => {
     currentAnchorDateIso = todayISO();
     loadView();
     attachChallanListener();
+    attachProformaListener();
   } else if (handlingEmailLink) {
     // Mid sign-in via the emailed link -- leave whatever screen is
     // already showing (checkEmail while it resolves, or login if it just
@@ -1027,6 +1080,7 @@ auth.onAuthStateChanged((user) => {
     showScreen('login');
     detachLiveListener();
     detachChallanListener();
+    detachProformaListener();
   }
 });
 </script>
