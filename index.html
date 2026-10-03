@@ -72,10 +72,23 @@
      room before scrolling. */
   .voucher-detail-panel.tall{ max-height:420px; }
 
-  .pl-period-row{ display:flex; flex-wrap:wrap; gap:4px; margin-bottom:10px; }
+  .period-bar{
+    display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
+    background:var(--panel); border:1px solid var(--panel-edge); border-radius:12px; padding:7px 12px; margin:0 0 12px;
+  }
+  .period-btns{ display:flex; align-items:center; gap:5px; flex-wrap:wrap; }
+  .period-arrow{
+    padding:3px 10px; border-radius:7px; border:1px solid var(--panel-edge); background:var(--bg);
+    color:var(--text); font-family:'Inter',sans-serif; font-size:14px; font-weight:700; line-height:1.2; cursor:pointer;
+  }
+  .period-arrow:hover{ background:var(--ring-track); }
+  .period-arrow:disabled{ opacity:0.35; cursor:default; background:var(--bg); }
+  .period-range{ font-size:13px; font-weight:600; color:var(--text); }
+  .date-col{ display:none; }
+  .dash-grid.multi-day .date-col{ display:table-cell; white-space:nowrap; }
   .pl-period-btn{
-    padding:3px 7px; border-radius:6px; border:1px solid var(--panel-edge); background:var(--bg);
-    color:var(--text); font-family:'Inter',sans-serif; font-size:11px; font-weight:600; cursor:pointer;
+    padding:4px 10px; border-radius:7px; border:1px solid var(--panel-edge); background:var(--bg);
+    color:var(--text); font-family:'Inter',sans-serif; font-size:12px; font-weight:600; cursor:pointer;
   }
   .pl-period-btn:hover{ background:var(--ring-track); }
   .pl-period-btn.active{ background:var(--blue); color:#fff; border-color:var(--blue); }
@@ -215,28 +228,42 @@
   </div>
   <div class="view-label" id="viewLabel"><span class="live-dot"></span> Showing: Today (live)</div>
 
+  <div class="period-bar">
+    <div class="period-btns" id="periodBtns">
+      <button class="period-arrow" id="periodPrev" title="Previous">‹</button>
+      <button class="pl-period-btn active" data-period="daily">Daily</button>
+      <button class="pl-period-btn" data-period="weekly">Weekly</button>
+      <button class="pl-period-btn" data-period="monthly">Monthly</button>
+      <button class="pl-period-btn" data-period="quarterly">Quarterly</button>
+      <button class="pl-period-btn" data-period="half_yearly">Half-Yearly</button>
+      <button class="pl-period-btn" data-period="yearly">Yearly</button>
+      <button class="period-arrow" id="periodNext" title="Next">›</button>
+    </div>
+    <div class="period-range" id="periodRange"></div>
+  </div>
+
   <div class="dash-grid">
     <div class="card expandable" id="salesCard">
-      <div class="kicker">Daily Sales</div>
+      <div class="kicker">Sales</div>
       <div class="stat-count" id="salesTotal">₹0</div>
       <div class="stat-sub" id="salesCount">0 vouchers</div>
       <div class="tap-hint">Tap for customer-wise detail</div>
       <div class="voucher-detail-panel" id="salesDetail">
         <table class="datatable">
-          <thead><tr><th>Party</th><th>Description</th><th>Type</th><th class="num-col">Amount</th></tr></thead>
+          <thead><tr><th class="date-col">Date</th><th>Party</th><th>Description</th><th>Type</th><th class="num-col">Amount</th></tr></thead>
           <tbody id="salesDetailBody"></tbody>
         </table>
       </div>
     </div>
 
     <div class="card expandable" id="purchaseCard">
-      <div class="kicker">Daily Purchase</div>
+      <div class="kicker">Purchase</div>
       <div class="stat-count" id="purchaseTotal">₹0</div>
       <div class="stat-sub" id="purchaseCount">0 vouchers</div>
       <div class="tap-hint">Tap for party-wise detail</div>
       <div class="voucher-detail-panel" id="purchaseDetail">
         <table class="datatable">
-          <thead><tr><th>Party</th><th>Description</th><th>Type</th><th class="num-col">Amount</th></tr></thead>
+          <thead><tr><th class="date-col">Date</th><th>Party</th><th>Description</th><th>Type</th><th class="num-col">Amount</th></tr></thead>
           <tbody id="purchaseDetailBody"></tbody>
         </table>
       </div>
@@ -244,14 +271,6 @@
 
     <div class="card pl-card">
       <div class="kicker">Net profit / loss</div>
-      <div class="pl-period-row" id="plPeriodRow">
-        <button class="pl-period-btn active" data-period="daily">Daily</button>
-        <button class="pl-period-btn" data-period="weekly">Weekly</button>
-        <button class="pl-period-btn" data-period="monthly">Monthly</button>
-        <button class="pl-period-btn" data-period="quarterly">Quarterly</button>
-        <button class="pl-period-btn" data-period="half_yearly">Half-Yearly</button>
-        <button class="pl-period-btn" data-period="yearly">Yearly</button>
-      </div>
       <div class="stat-count" id="plAmount">₹0</div>
       <div class="pl-range-label" id="plRangeLabel"></div>
       <div class="review-flag" id="plReviewFlag" style="display:none;"></div>
@@ -264,8 +283,8 @@
       <div class="tap-hint">Tap for voucher-wise detail</div>
       <div class="voucher-detail-panel tall" id="cashDetail">
         <table class="datatable" id="cashTable">
-          <thead><tr><th>Party</th><th>Description</th><th>Type</th><th></th><th class="num-col">Amount</th></tr></thead>
-          <tbody id="cashBody"><tr><td colspan="5" class="empty-note">Waiting for first update…</td></tr></tbody>
+          <thead><tr><th class="date-col">Date</th><th>Party</th><th>Description</th><th>Type</th><th></th><th class="num-col">Amount</th></tr></thead>
+          <tbody id="cashBody"><tr><td colspan="6" class="empty-note">Waiting for first update…</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -277,8 +296,8 @@
       <div class="tap-hint">Tap for transaction-wise detail</div>
       <div class="voucher-detail-panel tall" id="bankDetail">
         <table class="datatable" id="bankTable">
-          <thead><tr><th>Party</th><th>Description</th><th>Type</th><th></th><th class="num-col">Amount</th></tr></thead>
-          <tbody id="bankBody"><tr><td colspan="5" class="empty-note">Waiting for first update…</td></tr></tbody>
+          <thead><tr><th class="date-col">Date</th><th>Party</th><th>Description</th><th>Type</th><th></th><th class="num-col">Amount</th></tr></thead>
+          <tbody id="bankBody"><tr><td colspan="6" class="empty-note">Waiting for first update…</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -360,13 +379,14 @@ setInterval(setClock, 1000);
 function renderMoneyTable(bodyId, rows, emptyText){
   const body = document.getElementById(bodyId);
   if (!rows || rows.length === 0){
-    body.innerHTML = `<tr><td colspan="5" class="empty-note">${emptyText}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="6" class="empty-note">${emptyText}</td></tr>`;
     return;
   }
   body.innerHTML = rows.map(v => {
     const isIn = v.direction === 'cash_in' || v.direction === 'bank_in';
     return `
     <tr>
+      <td class="date-col">${escapeHtml(v.date ? isoToShort(v.date) : '')}</td>
       <td>${escapeHtml(v.party || '(no party)')}</td>
       <td>${escapeHtml(v.description || '')}</td>
       <td>${escapeHtml(v.type || '')}</td>
@@ -391,14 +411,15 @@ function renderMoneySummary(countId, subId, rows, noun){
     noun + (rows.length === 1 ? '' : 's') + ' · In ' + fmtINR(moneyIn) + ' · Out ' + fmtINR(moneyOut);
 }
 
-function renderVoucherDetailTable(bodyId, rows){
+function renderVoucherDetailTable(bodyId, rows, emptyText){
   const body = document.getElementById(bodyId);
   if (!rows || rows.length === 0){
-    body.innerHTML = '<tr><td colspan="4" class="empty-note">No vouchers for this day.</td></tr>';
+    body.innerHTML = `<tr><td colspan="5" class="empty-note">${emptyText}</td></tr>`;
     return;
   }
   body.innerHTML = rows.map(v => `
     <tr>
+      <td class="date-col">${escapeHtml(v.date ? isoToShort(v.date) : '')}</td>
       <td>${escapeHtml(v.party || '(no party)')}</td>
       <td>${escapeHtml(v.description || '')}</td>
       <td>${escapeHtml(v.type || '')}</td>
@@ -406,8 +427,13 @@ function renderVoucherDetailTable(bodyId, rows){
     </tr>`).join('');
 }
 
-function applyData(data){
-  lastDailyData = data;
+// Sales, Purchase, Cash and Bank for whatever the period bar is showing.
+// For one day that's the day's document as synced; for a longer period it's
+// those days added together (loadPeriodTotals), each voucher carrying its
+// date for the Date column. Adding days up is right for these four -- they
+// are flows. It is not right for profit, which is why P&L never comes
+// through here for a period (see loadPlPeriod).
+function renderTiles(data, emptyWhat){
   const sales = data.sales || { total: 0, count: 0, vouchers: [] };
   const purchase = data.purchase || { total: 0, count: 0, vouchers: [] };
   const cash = data.cash_vouchers || { vouchers: [] };
@@ -417,22 +443,20 @@ function applyData(data){
   document.getElementById('salesCount').textContent = sales.count + ' voucher' + (sales.count === 1 ? '' : 's');
   document.getElementById('purchaseTotal').textContent = fmtINR(purchase.total);
   document.getElementById('purchaseCount').textContent = purchase.count + ' voucher' + (purchase.count === 1 ? '' : 's');
-  renderVoucherDetailTable('salesDetailBody', sales.vouchers);
-  renderVoucherDetailTable('purchaseDetailBody', purchase.vouchers);
-
-  // Called on every live Firestore update for today (onSnapshot fires more
-  // than once -- once from cache, once from the server, then again on any
-  // real change). Refreshing whichever period tab is actually on screen,
-  // not always 'daily', matters here: hardcoding 'daily' used to snap the
-  // view back to Daily -- today's card, dash and all if today hasn't
-  // synced yet -- every time the listener fired, undoing whatever period
-  // (Weekly/Monthly/...) the person had just clicked.
-  loadPlPeriod(currentPlPeriod);
-
-  renderMoneyTable('cashBody', cash.vouchers, 'No cash vouchers for this day.');
-  renderMoneyTable('bankBody', bank.vouchers, 'No bank transactions for this day.');
+  renderVoucherDetailTable('salesDetailBody', sales.vouchers, 'No vouchers ' + emptyWhat + '.');
+  renderVoucherDetailTable('purchaseDetailBody', purchase.vouchers, 'No vouchers ' + emptyWhat + '.');
+  renderMoneyTable('cashBody', cash.vouchers, 'No cash vouchers ' + emptyWhat + '.');
+  renderMoneyTable('bankBody', bank.vouchers, 'No bank transactions ' + emptyWhat + '.');
   renderMoneySummary('cashTotal', 'cashSummary', cash.vouchers, 'voucher');
   renderMoneySummary('bankTotal', 'bankSummary', bank.vouchers, 'transaction');
+}
+
+function applyData(data){
+  lastDailyData = data;
+  renderTiles(data, 'for this day');
+  // Runs on every live update for today (onSnapshot fires more than once --
+  // cache, then server, then any real change), so the P&L refreshes with it.
+  loadPlPeriod('daily', viewToken);
 }
 
 // ---------------------------------------------------------------------
@@ -440,7 +464,11 @@ function applyData(data){
 // ---------------------------------------------------------------------
 let currentAnchorDateIso = todayISO();
 let lastDailyData = null;
-let currentPlPeriod = 'daily';
+let currentPeriod = 'daily';
+// Bumped by every loadView; a slow read that comes back after the person
+// has moved on to another period or date sees a newer token and is dropped,
+// instead of painting old figures over the new view.
+let viewToken = 0;
 
 function fyStartDateObj(d){
   // Indian financial year: 1 April - 31 March.
@@ -511,16 +539,14 @@ function renderPlAmount(net, needsReview, reasonText){
   }
 }
 
-async function loadPlPeriod(period){
-  currentPlPeriod = period;
-  document.querySelectorAll('.pl-period-btn').forEach(b => b.classList.toggle('active', b.dataset.period === period));
+async function loadPlPeriod(period, token){
   const rangeLabelEl = document.getElementById('plRangeLabel');
 
   if (period === 'daily'){
     const pl = (lastDailyData && lastDailyData.profit_and_loss) || { needs_review: true, net_profit_loss: null };
     renderPlAmount(pl.net_profit_loss, pl.needs_review || pl.net_profit_loss === null,
       'Could not read a clear P&L figure from Tally for this day — check the sync script log. (' + (pl.reason || 'unknown reason') + ')');
-    rangeLabelEl.textContent = isoToLabel(currentAnchorDateIso);
+    rangeLabelEl.textContent = '';
     return;
   }
 
@@ -532,11 +558,13 @@ async function loadPlPeriod(period){
   // that showed Rs.2,02,36,465 against Tally's Rs.1,41,47,775.
   const [start] = plPeriodRange(period, currentAnchorDateIso);
   const label = PL_PERIOD_LABELS[period];
-  rangeLabelEl.textContent = 'Loading this ' + label + '…';
+  rangeLabelEl.textContent = 'Loading…';
+  renderPlAmount(null, false, '');
+  document.getElementById('plAmount').textContent = '…';
 
   try {
     const snap = await db.collection(PERIOD_COLLECTION).doc(period + '_' + toISO(start)).get();
-    if (currentPlPeriod !== period) return; // another tab was picked while this loaded
+    if (token !== viewToken) return;
     if (!snap.exists){
       rangeLabelEl.textContent = '';
       renderPlAmount(null, true, 'This ' + label + "'s P&L hasn't been synced from Tally yet.");
@@ -544,20 +572,15 @@ async function loadPlPeriod(period){
     }
     const report = snap.data();
     const pl = report.profit_and_loss || {};
-    rangeLabelEl.textContent = isoToShort(report.from) + ' – ' + isoToShort(report.to) + (report.complete ? '' : ' (so far)');
+    rangeLabelEl.textContent = report.complete ? '' : 'Tally figure up to ' + isoToShort(report.to);
     renderPlAmount(pl.net_profit_loss ?? null, pl.needs_review || pl.net_profit_loss == null,
       'Could not read a clear P&L figure from Tally for this ' + label + ' — check the sync script log. (' + (pl.reason || 'unknown reason') + ')');
   } catch (e){
+    if (token !== viewToken) return;
     rangeLabelEl.textContent = 'Could not load this ' + label + ' — check your internet connection.';
     console.error(e);
   }
 }
-
-document.getElementById('plPeriodRow').addEventListener('click', (e) => {
-  const btn = e.target.closest('.pl-period-btn');
-  if (!btn) return;
-  loadPlPeriod(btn.dataset.period);
-});
 
 function clearData(){
   applyData({});
@@ -638,11 +661,9 @@ function setActiveButton(id){
 }
 
 function loadDay(dateIso, live){
-  detachLiveListener();
-  currentAnchorDateIso = dateIso;
-  document.getElementById('dateLabel').textContent = isoToLabel(dateIso);
-
+  const token = viewToken;
   const handleDoc = (doc, isLive) => {
+    if (token !== viewToken) return; // the person has moved on to another view
     if (doc.exists){
       applyData(doc.data());
       showStatus(null);
@@ -669,6 +690,103 @@ function loadDay(dateIso, live){
   }
 }
 
+function addDaysIso(iso, n){
+  const d = new Date(iso + 'T00:00:00');
+  return toISO(new Date(d.getFullYear(), d.getMonth(), d.getDate() + n));
+}
+
+function periodBoundsIso(period, anchorIso){
+  const [start, end] = plPeriodRange(period, anchorIso);
+  return [toISO(start), toISO(end)];
+}
+
+const PERIOD_TITLES = {
+  daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly',
+  quarterly: 'Quarterly', half_yearly: 'Half-yearly', yearly: 'Yearly',
+};
+
+// Draws whatever the period bar and date box say: currentPeriod (Daily ..
+// Yearly) around currentAnchorDateIso. Every way of changing the view --
+// the period buttons, the arrows, Today, View date, signing in -- sets
+// those two and calls this, so all the tiles always show the same period.
+function loadView(){
+  const token = ++viewToken;
+  detachLiveListener();
+  const period = currentPeriod, anchor = currentAnchorDateIso, today = todayISO();
+  const [startIso, endIso] = periodBoundsIso(period, anchor);
+  const rangeText = period === 'daily' ? isoToLabel(anchor)
+    : isoToShort(startIso) + ' – ' + isoToShort(endIso) + (endIso > today ? ' (so far)' : '');
+
+  document.getElementById('pickDate').value = anchor;
+  document.getElementById('updatedNote').textContent = '';
+  setActiveButton(anchor === today ? 'btnToday' : null);
+  document.getElementById('dateLabel').textContent = period === 'daily' ? isoToLabel(anchor) : rangeText;
+  document.getElementById('periodRange').textContent = rangeText;
+  document.querySelectorAll('#periodBtns .pl-period-btn').forEach(b => b.classList.toggle('active', b.dataset.period === period));
+  // Nothing after today has been synced, so there's no next period to go to.
+  document.getElementById('periodNext').disabled = endIso >= today;
+  document.querySelector('.dash-grid').classList.toggle('multi-day', period !== 'daily');
+
+  if (period === 'daily'){
+    loadDay(anchor, anchor === today);
+    return;
+  }
+  document.getElementById('viewLabel').textContent = 'Showing: ' + PERIOD_TITLES[period] + ' totals';
+  loadPeriodTotals(period, startIso, endIso < today ? endIso : today, token);
+  loadPlPeriod(period, token);
+}
+
+async function loadPeriodTotals(period, fromIso, toIso, token){
+  const dates = [];
+  for (let d = fromIso; d <= toIso; d = addDaysIso(d, 1)) dates.push(d);
+  showStatus(null);
+  document.getElementById('updatedNote').textContent = 'Loading ' + dates.length + ' days…';
+  try {
+    const snaps = await Promise.all(dates.map(d => db.collection(COLLECTION).doc(d).get()));
+    if (token !== viewToken) return;
+    const total = { sales: { total: 0, count: 0, vouchers: [] }, purchase: { total: 0, count: 0, vouchers: [] },
+                    cash_vouchers: { vouchers: [] }, bank_vouchers: { vouchers: [] } };
+    let missing = 0;
+    snaps.forEach((snap, i) => {
+      if (!snap.exists){ missing++; return; }
+      const day = snap.data(), date = dates[i];
+      for (const k of ['sales', 'purchase']){
+        const x = day[k] || {};
+        total[k].total += x.total || 0;
+        total[k].count += x.count || 0;
+        (x.vouchers || []).forEach(v => total[k].vouchers.push({ ...v, date }));
+      }
+      for (const k of ['cash_vouchers', 'bank_vouchers']){
+        ((day[k] || {}).vouchers || []).forEach(v => total[k].vouchers.push({ ...v, date }));
+      }
+    });
+    renderTiles(total, 'in this ' + PL_PERIOD_LABELS[period]);
+    document.getElementById('updatedNote').textContent = 'Totals of ' + (dates.length - missing) + ' synced day' +
+      (dates.length - missing === 1 ? '' : 's') + (missing ? ' · ' + missing + ' day' + (missing === 1 ? '' : 's') + ' not synced yet' : '');
+  } catch (e){
+    if (token !== viewToken) return;
+    showStatus('Could not reach Firestore — check your internet connection.');
+    console.error(e);
+  }
+}
+
+document.getElementById('periodBtns').addEventListener('click', (e) => {
+  const btn = e.target.closest('button');
+  if (!btn || btn.disabled) return;
+  if (btn.dataset.period){
+    currentPeriod = btn.dataset.period;
+  } else {
+    // The arrows step to the period just before or after the one on screen:
+    // the day before its first day, or the day after its last. Stepping into
+    // the period that contains today lands on today itself, so switching
+    // that view to Daily afterwards shows today, not the period's first day.
+    const [startIso, endIso] = periodBoundsIso(currentPeriod, currentAnchorDateIso);
+    const next = btn.id === 'periodNext' ? addDaysIso(endIso, 1) : addDaysIso(startIso, -1);
+    currentAnchorDateIso = periodBoundsIso(currentPeriod, next)[1] >= todayISO() ? todayISO() : next;
+  }
+  loadView();
+});
+
 function wireExpandableCard(cardId, panelId){
   const card = document.getElementById(cardId);
   const panel = document.getElementById(panelId);
@@ -686,16 +804,15 @@ wireExpandableCard('bankCard', 'bankDetail');
 wireExpandableCard('challanCard', 'challanDetail');
 
 document.getElementById('btnToday').addEventListener('click', () => {
-  setActiveButton('btnToday');
-  document.getElementById('pickDate').value = todayISO();
-  loadDay(todayISO(), true);
+  currentAnchorDateIso = todayISO();
+  loadView();
 });
 
 document.getElementById('btnPickDate').addEventListener('click', () => {
   const d = document.getElementById('pickDate').value;
   if (!d){ alert('Pick a date first.'); return; }
-  setActiveButton(null);
-  loadDay(d, false);
+  currentAnchorDateIso = d;
+  loadView();
 });
 
 // ---------------------------------------------------------------------
@@ -826,8 +943,8 @@ const handlingEmailLink = completeEmailLinkSignInIfPresent();
 auth.onAuthStateChanged((user) => {
   if (user){
     showScreen('app');
-    document.getElementById('pickDate').value = todayISO();
-    loadDay(todayISO(), true);
+    currentAnchorDateIso = todayISO();
+    loadView();
     attachChallanListener();
   } else if (handlingEmailLink) {
     // Mid sign-in via the emailed link -- leave whatever screen is
