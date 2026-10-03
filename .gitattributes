@@ -1,0 +1,2 @@
+# Windows cmd needs CRLF line endings; never let git convert this file.
+*.cmd -text

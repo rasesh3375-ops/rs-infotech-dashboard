@@ -1080,6 +1080,40 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
     sync_period_reports(from_date, to_date, dry_run=dry_run, dump_raw_dir=dump_raw_dir)
 
 
+def run_check():
+    """Checks the two things a sync needs, the same way a sync uses them,
+    and prints one CHECK line for each: the Firebase key (reads from the
+    database) and Tally (the ledger lookups a sync starts with, through the
+    same requests code and the same unreadable-company guard). Returns 0
+    when both pass. Setup-Tally-Sync.cmd runs this to tell whoever is
+    setting up an office PC exactly what still needs fixing.
+
+    Tally is checked through this code rather than a separate web request
+    on purpose: a check that takes a different network path -- PowerShell's
+    can go through a proxy that Python's doesn't -- can fail while the sync
+    would work, or pass while it wouldn't.
+    """
+    global REQUEST_TIMEOUT_SECONDS
+    ok = True
+    try:
+        list(_firestore_db().collection(FIRESTORE_COLLECTION).limit(1).stream())
+        print("CHECK database: OK")
+    except Exception as e:
+        print(f"CHECK database: FAILED -- {e}")
+        ok = False
+    # A stuck Tally shouldn't keep a setup screen waiting the sync's two minutes.
+    REQUEST_TIMEOUT_SECONDS = 20
+    try:
+        today = datetime.date.today()
+        cash, bank = fetch_cash_ledger_names(today), fetch_bank_ledger_names(today)
+        _refuse_unreadable_company(cash, bank)
+        print(f"CHECK tally: OK -- {TALLY_COMPANY_NAME} is readable ({len(cash)} cash, {len(bank)} bank ledgers)")
+    except TallyError as e:
+        print(f"CHECK tally: FAILED -- {e}")
+        ok = False
+    return 0 if ok else 1
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--date", help="YYYY-MM-DD, defaults to today", default=None)
@@ -1088,12 +1122,17 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Fetch and print, do not write to Firestore")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--dump-raw-dir", default=None, help="Save every raw Tally XML response here for debugging")
+    parser.add_argument("--check", action="store_true",
+                        help="Only check that the Firebase key works and Tally answers with the company readable, then exit")
     args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
+
+    if args.check:
+        sys.exit(run_check())
 
     try:
         if args.backfill_from:

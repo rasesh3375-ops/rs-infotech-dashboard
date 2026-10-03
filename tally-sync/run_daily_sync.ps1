@@ -35,6 +35,16 @@
 $ErrorActionPreference = 'Continue'
 Set-Location -Path $PSScriptRoot
 
+# Setup-Tally-Sync.cmd records which python.exe it set up here. A Python it
+# had to install just now isn't on the PATH of anything already running, and
+# the Microsoft Store's "python" stand-in can answer instead of the real one,
+# so the task puts the recorded one first. Without the file (the laptop
+# install) plain "python" is used, as before.
+$pythonFile = Join-Path $PSScriptRoot 'python_path.txt'
+if (Test-Path $pythonFile) {
+    $env:PATH = (Split-Path -Parent (Get-Content $pythonFile -Raw).Trim()) + ';' + $env:PATH
+}
+
 $yesterday = (Get-Date).AddDays(-1)
 $to = $yesterday.ToString('yyyy-MM-dd')
 $marker = Join-Path $PSScriptRoot 'last_full_resync.txt'
