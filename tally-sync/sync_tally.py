@@ -3,7 +3,10 @@
 Pulls Daily Sales, Daily Purchase, Daily Profit & Loss and Daily Cash
 Vouchers out of a local Tally Prime install (via its HTTP/XML export
 gateway) and writes one document per day to Firestore, for the
-rs-infotech dashboard (../rs-infotech/index.html) to read.
+rs-infotech dashboard (../rs-infotech/index.html) to read. Alongside that
+it stores Tally's own Profit & Loss for every week, month, quarter,
+half-year and financial year the synced days fall in, and the open
+Delivery Notes.
 
 Stock Summary is deliberately NOT included here -- computing closing
 stock balances/values as of a date was consistently the slowest thing
@@ -66,6 +69,13 @@ FIRESTORE_COLLECTION = "daily_reports"
 # Unlike FIRESTORE_COLLECTION this is not one document per day; it's one
 # document per voucher, kept in sync with Tally on every run.
 DELIVERY_CHALLAN_COLLECTION = "delivery_challans"
+
+# Tally's own P&L for each whole week / month / quarter / half-year /
+# financial year, one document per period, keyed "<period>_<start date>"
+# (e.g. "monthly_2026-09-01") -- see sync_period_reports. The dashboard's
+# Weekly..Yearly tabs read these instead of adding days up.
+PERIOD_COLLECTION = "period_reports"
+PERIOD_NAMES = ("weekly", "monthly", "quarterly", "half_yearly", "yearly")
 
 REQUEST_TIMEOUT_SECONDS = 120
 
@@ -558,10 +568,14 @@ def _bank_vouchers_from(vouchers, bank_ledgers):
     return _ledger_touching_vouchers_from(vouchers, bank_ledgers, "bank_in", "bank_out")
 
 
-def fetch_profit_and_loss(date, dump_raw_dir=None):
+def fetch_profit_and_loss(date, dump_raw_dir=None, to_date=None):
     """Uses Tally's own native Profit & Loss report export for a single day
-    (SVFROMDATE == SVTODATE == date), so Tally does the Income/Expense
-    classification itself instead of us reimplementing it. The report's
+    (SVFROMDATE == SVTODATE == date), or for date..to_date when to_date is
+    given -- the same report Tally shows for that period, so Tally does the
+    Income/Expense classification and the stock valuation itself instead of
+    us reimplementing it. Over a range, Opening Stock is the stock at the
+    start of the range and Closing Stock the stock at its end, so the
+    net_profit_loss formula below is Tally's period profit as-is. The report's
     display XML is version-dependent, so this looks for the 'Nett Profit'/
     'Nett Loss' line by name rather than a fixed tag position. If it can't
     find one confidently, it returns needs_review=True with the raw line
@@ -578,7 +592,7 @@ def fetch_profit_and_loss(date, dump_raw_dir=None):
     <STATICVARIABLES>
      <SVCURRENTCOMPANY>{TALLY_COMPANY_NAME}</SVCURRENTCOMPANY>
      <SVFROMDATE>{_fmt_date(date)}</SVFROMDATE>
-     <SVTODATE>{_fmt_date(date)}</SVTODATE>
+     <SVTODATE>{_fmt_date(to_date or date)}</SVTODATE>
     </STATICVARIABLES>
    </REQUESTDESC>
   </EXPORTDATA>
@@ -609,9 +623,11 @@ def fetch_profit_and_loss(date, dump_raw_dir=None):
     # total_income/total_expense (which the dashboard sums across a
     # period) inflated a 168-day total by roughly 10x versus Tally's own
     # period report. So stock is tracked in its own fields here, used only
-    # for this single day's net_profit_loss, and deliberately kept OUT of
+    # for this report's own net_profit_loss, and deliberately kept OUT of
     # total_income/total_expense, which stay flow-only and safe to sum
-    # across any number of days.
+    # across any number of days. A period's real profit is never a sum of
+    # days: it's this same report requested for the whole period -- see
+    # sync_period_reports.
     INCOME_GROUPS = {"sales accounts", "direct incomes", "indirect incomes"}
     EXPENSE_GROUPS = {"purchase accounts", "direct expenses", "indirect expenses"}
     STOCK_GROUPS = {"closing stock": "closing", "opening stock": "opening"}
@@ -733,7 +749,7 @@ def fetch_profit_and_loss(date, dump_raw_dir=None):
 # Firestore
 # ---------------------------------------------------------------------------
 
-def push_to_firestore(date_iso, payload):
+def _firestore_db():
     import firebase_admin
     from firebase_admin import credentials, firestore
 
@@ -747,7 +763,15 @@ def push_to_firestore(date_iso, payload):
         cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
         firebase_admin.initialize_app(cred)
 
-    db = firestore.client()
+    return firestore.client()
+
+
+def push_period_report(doc_id, doc):
+    _firestore_db().collection(PERIOD_COLLECTION).document(doc_id).set(doc)
+
+
+def push_to_firestore(date_iso, payload):
+    db = _firestore_db()
     db.collection(FIRESTORE_COLLECTION).document(date_iso).set(payload)
 
 
@@ -777,20 +801,7 @@ def push_delivery_challans_to_firestore(records, covered_from):
         which looks the same as voucher types failing to classify, and
         emptying the whole list on a bad read is the worse mistake.
     """
-    import firebase_admin
-    from firebase_admin import credentials, firestore
-
-    if not os.path.exists(SERVICE_ACCOUNT_PATH):
-        raise RuntimeError(
-            f"Service account key not found at {SERVICE_ACCOUNT_PATH}. "
-            "Download it from Firebase Console > Project settings > Service accounts."
-        )
-
-    if not firebase_admin._apps:
-        cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
-        firebase_admin.initialize_app(cred)
-
-    db = firestore.client()
+    db = _firestore_db()
     collection = db.collection(DELIVERY_CHALLAN_COLLECTION)
     batch = db.batch()
     pending = 0
@@ -831,6 +842,93 @@ def push_delivery_challans_to_firestore(records, covered_from):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
+def _fy_start(d):
+    """1 April of the financial year d falls in (1 April - 31 March)."""
+    return datetime.date(d.year if d.month >= 4 else d.year - 1, 4, 1)
+
+
+def _add_months(first_of_month, n):
+    m = first_of_month.month - 1 + n
+    return datetime.date(first_of_month.year + m // 12, m % 12 + 1, 1)
+
+
+def period_range(period, d):
+    """(start, end) of the period containing d, matching plPeriodRange in
+    index.html exactly: weeks run Monday-Sunday, months are calendar months,
+    and quarters, half-years and years count from 1 April."""
+    if period == "weekly":
+        start = d - datetime.timedelta(days=d.weekday())
+        return start, start + datetime.timedelta(days=6)
+    if period == "monthly":
+        start = d.replace(day=1)
+        return start, _add_months(start, 1) - datetime.timedelta(days=1)
+    size = {"quarterly": 3, "half_yearly": 6, "yearly": 12}[period]
+    fy = _fy_start(d)
+    months_in = (d.year - fy.year) * 12 + d.month - fy.month
+    start = _add_months(fy, months_in // size * size)
+    return start, _add_months(start, size) - datetime.timedelta(days=1)
+
+
+def periods_touching(from_date, to_date):
+    """Every (period, start, end) containing at least one day of
+    from_date..to_date -- the periods a sync of those days can change."""
+    found = {}
+    d = from_date
+    while d <= to_date:
+        for period in PERIOD_NAMES:
+            start, end = period_range(period, d)
+            found[(period, start)] = end
+        d += datetime.timedelta(days=1)
+    return [(period, start, end) for (period, start), end in sorted(found.items(), key=lambda kv: (kv[0][1], kv[0][0]))]
+
+
+def sync_period_reports(from_date, to_date, dry_run=False, dump_raw_dir=None):
+    """Asks Tally for its own P&L for every period the synced days fall in,
+    and stores each as one document. A period still in progress is
+    requested up to today and marked complete=False.
+
+    This replaced adding up daily figures on the dashboard, which could not
+    give the real profit: a period's profit includes the change in stock
+    over the whole period (closing stock at its end minus opening stock at
+    its start), and summed daily stock is meaningless -- so the sum left
+    stock out entirely and showed income minus expenses instead. For
+    1 Apr - 15 Sep 2026 that read Rs.2,02,36,465 against Tally's real
+    profit of Rs.1,41,47,775; the Rs.60.9 lakh difference was the fall in
+    stock value. Asking Tally for the period gives its own figure, stock
+    included, with nothing worked out here.
+
+    One period failing is logged and skipped, like a day in a backfill --
+    the next sync covering it tries again.
+    """
+    today = datetime.date.today()
+    periods = periods_touching(from_date, to_date)
+    written, failed = 0, []
+    for period, start, end in periods:
+        upto = min(end, today)
+        doc_id = f"{period}_{start.isoformat()}"
+        try:
+            pl = fetch_profit_and_loss(start, dump_raw_dir, to_date=upto)
+        except TallyError as e:
+            log.error("%s (%s to %s): skipped -- %s", doc_id, start, upto, e)
+            failed.append(doc_id)
+            continue
+        log.info("%s: %s to %s%s | P&L %s", period, start, upto, "" if upto == end else " (so far)",
+                 "needs review" if pl["needs_review"] else f"Rs.{pl['net_profit_loss']}")
+        if not dry_run:
+            push_period_report(doc_id, {
+                "period": period,
+                "from": start.isoformat(),
+                "to": upto.isoformat(),
+                "complete": upto == end,
+                "synced_at": datetime.datetime.now().isoformat(),
+                "profit_and_loss": pl,
+            })
+        written += 1
+    log.info("Period P&L: %d/%d periods %s%s.", written, len(periods),
+             "fetched (dry run, not written)" if dry_run else "written",
+             f", {len(failed)} failed ({', '.join(failed)})" if failed else "")
+
 
 def _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, bank_ledgers, dump_raw_dir=None):
     payload = {
@@ -910,6 +1008,7 @@ def run(date, dry_run=False, dump_raw_dir=None):
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         print(f"\n{len(delivery_challans)} Delivery Note voucher(s) found (not written, dry run):")
         print(json.dumps(delivery_challans, indent=2, ensure_ascii=False))
+        sync_period_reports(date, date, dry_run=True, dump_raw_dir=dump_raw_dir)
         log.info("Dry run -- nothing written to Firestore.")
         return
 
@@ -917,6 +1016,7 @@ def run(date, dry_run=False, dump_raw_dir=None):
     removed = push_delivery_challans_to_firestore(delivery_challans, _earliest_voucher_date(all_vouchers))
     log.info("Written to Firestore: %s/%s (+%d delivery challans upserted, %d no longer in Tally removed)",
               FIRESTORE_COLLECTION, date_iso, len(delivery_challans), removed)
+    sync_period_reports(date, date, dump_raw_dir=dump_raw_dir)
 
 
 def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
@@ -977,6 +1077,7 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
     log.info("Backfill done: %d/%d days written%s. %d delivery challans upserted, %d no longer in Tally removed.",
               succeeded, day_count, f", {len(failed)} failed ({', '.join(failed)})" if failed else "",
               len(delivery_challans), removed)
+    sync_period_reports(from_date, to_date, dry_run=dry_run, dump_raw_dir=dump_raw_dir)
 
 
 def main():

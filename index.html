@@ -320,6 +320,7 @@ const auth = firebase.auth();
 
 const COLLECTION = 'daily_reports';
 const CHALLAN_COLLECTION = 'delivery_challans';
+const PERIOD_COLLECTION = 'period_reports';
 
 function fmtINR(n){
   n = Math.round(n || 0);
@@ -342,6 +343,9 @@ function toISO(d){
   return `${y}-${m}-${day}`;
 }
 function todayISO(){ return toISO(new Date()); }
+function isoToShort(iso){
+  return new Date(iso + 'T00:00:00').toLocaleDateString(undefined, { day:'numeric', month:'short', year:'numeric' });
+}
 function isoToLabel(iso){
   const d = new Date(iso + 'T00:00:00');
   return d.toLocaleDateString(undefined, { weekday:'long', month:'short', day:'numeric', year:'numeric' });
@@ -487,19 +491,6 @@ function plPeriodRange(period, anchorIso){
   return [anchor, anchor]; // daily, or unrecognised
 }
 
-function dateRangeIsoArray(start, end){
-  const out = [];
-  let cur = new Date(start.getFullYear(), start.getMonth(), start.getDate());
-  const endTime = new Date(end.getFullYear(), end.getMonth(), end.getDate()).getTime();
-  let guard = 0;
-  while (cur.getTime() <= endTime && guard < 3000){
-    out.push(toISO(cur));
-    cur = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() + 1);
-    guard++;
-  }
-  return out;
-}
-
 const PL_PERIOD_LABELS = {
   daily: 'day', weekly: 'week', monthly: 'month',
   quarterly: 'quarter', half_yearly: 'half-year', yearly: 'financial year',
@@ -533,34 +524,31 @@ async function loadPlPeriod(period){
     return;
   }
 
-  const [start, end] = plPeriodRange(period, currentAnchorDateIso);
-  const dates = dateRangeIsoArray(start, end);
-  rangeLabelEl.textContent = 'Loading this ' + PL_PERIOD_LABELS[period] + '…';
+  // Tally's own P&L for the whole period, which sync_tally.py requests and
+  // stores in period_reports. This used to add up the days' income and
+  // expenses instead, which can't be the real profit: a period's profit
+  // includes the change in stock across the whole period, and summed daily
+  // stock is meaningless, so the sum left stock out. For 1 Apr - 15 Sep 2026
+  // that showed Rs.2,02,36,465 against Tally's Rs.1,41,47,775.
+  const [start] = plPeriodRange(period, currentAnchorDateIso);
+  const label = PL_PERIOD_LABELS[period];
+  rangeLabelEl.textContent = 'Loading this ' + label + '…';
 
   try {
-    const snaps = await Promise.all(dates.map(d => db.collection(COLLECTION).doc(d).get()));
-    let income = 0, expense = 0, daysWithData = 0, daysReview = 0;
-    for (const s of snaps){
-      if (!s.exists) continue;
-      const pl = s.data().profit_and_loss;
-      if (!pl) continue;
-      if (pl.needs_review || pl.net_profit_loss === null){ daysReview++; continue; }
-      income += pl.total_income || 0;
-      expense += pl.total_expense || 0;
-      daysWithData++;
+    const snap = await db.collection(PERIOD_COLLECTION).doc(period + '_' + toISO(start)).get();
+    if (currentPlPeriod !== period) return; // another tab was picked while this loaded
+    if (!snap.exists){
+      rangeLabelEl.textContent = '';
+      renderPlAmount(null, true, 'This ' + label + "'s P&L hasn't been synced from Tally yet.");
+      return;
     }
-    const startIso = toISO(start), endIso = toISO(end);
-    const rangeText = startIso === endIso ? isoToLabel(startIso) : (isoToLabel(startIso) + ' – ' + isoToLabel(endIso));
-    rangeLabelEl.textContent = rangeText + ' · ' + daysWithData + '/' + dates.length + ' day(s) synced' +
-      (daysReview ? ', ' + daysReview + ' needing review excluded' : '');
-
-    if (daysWithData === 0){
-      renderPlAmount(null, true, 'No synced figures found for this ' + PL_PERIOD_LABELS[period] + ' yet.');
-    } else {
-      renderPlAmount(income - expense, false, '');
-    }
+    const report = snap.data();
+    const pl = report.profit_and_loss || {};
+    rangeLabelEl.textContent = isoToShort(report.from) + ' – ' + isoToShort(report.to) + (report.complete ? '' : ' (so far)');
+    renderPlAmount(pl.net_profit_loss ?? null, pl.needs_review || pl.net_profit_loss == null,
+      'Could not read a clear P&L figure from Tally for this ' + label + ' — check the sync script log. (' + (pl.reason || 'unknown reason') + ')');
   } catch (e){
-    rangeLabelEl.textContent = 'Could not load this ' + PL_PERIOD_LABELS[period] + ' — check your internet connection.';
+    rangeLabelEl.textContent = 'Could not load this ' + label + ' — check your internet connection.';
     console.error(e);
   }
 }
