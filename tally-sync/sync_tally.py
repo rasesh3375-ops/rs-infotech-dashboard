@@ -816,6 +816,30 @@ def _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, bank_ledg
     return payload
 
 
+UNREADABLE_COMPANY_HINT = (
+    "Tally answered but returned no company data -- the company isn't loaded, or "
+    "its shared data folder (\\\\accounts\\D\\Tally.ERP9_GST\\Data) can't be read "
+    "from this PC. Nothing was written to Firestore."
+)
+
+
+def _refuse_unreadable_company(cash_ledgers, bank_ledgers):
+    """Raise before anything is fetched or written when Tally is up but can't
+    see its own company data. Confirmed against a real run (2 Oct 2026): with
+    the shared data folder unreachable, Tally still answered every request --
+    with empty lists, not an error -- and both ledger lookups came back empty.
+    Carrying on from there would write Rs.0 sales/purchase/cash/bank over a
+    real day (or, in a backfill, over every day in the range). That run only
+    escaped because the next request, the whole-year voucher fetch, crashed
+    Tally outright; it's checked here so it doesn't rely on that again.
+
+    This company has ledgers under both Cash-in-Hand and Bank Accounts, so
+    both lists empty at once can only mean Tally can't read the company.
+    """
+    if not cash_ledgers and not bank_ledgers:
+        raise TallyError("No Cash-in-Hand and no Bank ledgers at all. " + UNREADABLE_COMPANY_HINT)
+
+
 def run(date, dry_run=False, dump_raw_dir=None):
     date_iso = date.strftime("%Y-%m-%d")
     log.info("Syncing %s for %s", TALLY_COMPANY_NAME, date_iso)
@@ -823,6 +847,7 @@ def run(date, dry_run=False, dump_raw_dir=None):
     voucher_type_parents = fetch_voucher_type_parents(date, dump_raw_dir)
     cash_ledgers = fetch_cash_ledger_names(date, dump_raw_dir)
     bank_ledgers = fetch_bank_ledger_names(date, dump_raw_dir)
+    _refuse_unreadable_company(cash_ledgers, bank_ledgers)
     if not cash_ledgers:
         log.warning("No ledger found under 'Cash-in-Hand' -- cash voucher list will be empty. "
                     "Check the group name matches your Tally chart of accounts.")
@@ -834,6 +859,8 @@ def run(date, dry_run=False, dump_raw_dir=None):
     # history regardless of date (see _fetch_all_voucher_records), so a
     # second fetch here would just be the same slow request run twice.
     all_vouchers = _fetch_all_voucher_records(date, dump_raw_dir)
+    if not all_vouchers:
+        raise TallyError("No vouchers at all in the whole financial year. " + UNREADABLE_COMPANY_HINT)
     wanted = _fmt_date(date)
     vouchers = [v for v in all_vouchers if _text(v, "DATE") == wanted]
 
@@ -870,6 +897,7 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
     voucher_type_parents = fetch_voucher_type_parents(from_date, dump_raw_dir)
     cash_ledgers = fetch_cash_ledger_names(from_date, dump_raw_dir)
     bank_ledgers = fetch_bank_ledger_names(from_date, dump_raw_dir)
+    _refuse_unreadable_company(cash_ledgers, bank_ledgers)
     if not cash_ledgers:
         log.warning("No ledger found under 'Cash-in-Hand' -- cash voucher lists will be empty. "
                     "Check the group name matches your Tally chart of accounts.")
@@ -877,6 +905,8 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
         log.warning("No ledger found under 'Bank Accounts'/'Bank OD A/c' -- bank voucher lists will be empty. "
                     "Check the group name matches your Tally chart of accounts.")
     vouchers_by_date = fetch_vouchers_grouped_by_date(dump_raw_dir)
+    if not vouchers_by_date:
+        raise TallyError("No vouchers at all in the whole financial year. " + UNREADABLE_COMPANY_HINT)
 
     succeeded = 0
     failed = []
