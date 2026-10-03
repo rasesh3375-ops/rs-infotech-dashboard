@@ -1,0 +1,33 @@
+# Publishes the dashboard to Firebase Hosting (rs-infotech-dashboard.web.app)
+# on every push to main that changes it, so nobody has to download the repo
+# and run "firebase deploy" by hand -- which is how every page change went
+# live before, and more than once published an old copy by mistake.
+#
+# Needs the repository secret FIREBASE_SERVICE_ACCOUNT_RS_INFOTECH_DASHBOARD,
+# created once by running "firebase init hosting:github" on a computer where
+# the Firebase CLI is logged in as the project owner. Only index.html (and a
+# 404.html, if one is added) is published -- firebase.json leaves out
+# tally-sync/, which holds the sync scripts, and every dotfile.
+name: Publish dashboard
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - index.html
+      - 404.html
+      - firebase.json
+      - .github/workflows/deploy-dashboard.yml
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_RS_INFOTECH_DASHBOARD }}
+          channelId: live
+          projectId: rs-infotech-dashboard

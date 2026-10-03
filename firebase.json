@@ -1,0 +1,14 @@
+{
+  "hosting": {
+    "public": ".",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**",
+      ".github/**",
+      "tally-sync/**",
+      "raw/**",
+      "*.md"
+    ]
+  }
+}

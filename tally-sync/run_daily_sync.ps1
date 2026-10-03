@@ -64,6 +64,58 @@ $logFile = Join-Path $PSScriptRoot 'daily_sync_log.txt'
 $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 
 Add-Content -Path $logFile -Encoding ASCII -Value "----- Scheduled run $timestamp, syncing $from to $to ($kind) -----"
+
+# --- Self-update from GitHub ------------------------------------------------
+# Every run first fetches the current sync scripts from the (public) GitHub
+# repo, so a fix reaches every PC by the next morning without anyone
+# downloading a ZIP and copying files by hand -- which was the only way
+# before, and went wrong more than once (an old download copied over the
+# new one). A file is replaced only when it differs and passes a check:
+# sync_tally.py has to compile, this script has to parse as PowerShell. If
+# GitHub can't be reached or a file fails its check, the version already
+# here runs unchanged. A new copy of this script itself is used from the
+# next run on; PowerShell has already read this one.
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$ProgressPreference = 'SilentlyContinue'
+$updateBase = 'https://raw.githubusercontent.com/rasesh3375-ops/rs-infotech-dashboard/main/tally-sync'
+$updated = @(); $updateProblems = @()
+foreach ($name in @('sync_tally.py', 'requirements.txt', 'run_daily_sync.ps1')) {
+    $current = Join-Path $PSScriptRoot $name
+    $download = Join-Path $PSScriptRoot "update-$name"
+    try {
+        Invoke-WebRequest -Uri "$updateBase/$name" -OutFile $download -UseBasicParsing -TimeoutSec 60 -ErrorAction Stop
+    } catch {
+        $updateProblems += "$name could not be downloaded"
+        continue
+    }
+    $text = Get-Content $download -Raw
+    $valid = switch ($name) {
+        'sync_tally.py' {
+            & python -m py_compile $download 2>$null | Out-Null
+            ($LASTEXITCODE -eq 0) -and ($text -match 'def main')
+        }
+        'requirements.txt' { $text -match 'firebase-admin' }
+        'run_daily_sync.ps1' {
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$parseErrors)
+            ($text -match 'sync_tally\.py') -and -not $parseErrors
+        }
+    }
+    if (-not $valid) {
+        $updateProblems += "$name from GitHub failed its check"
+    } elseif (-not (Test-Path $current) -or (Get-FileHash $download).Hash -ne (Get-FileHash $current).Hash) {
+        Copy-Item -Force $download $current
+        $updated += $name
+    }
+    Remove-Item -Force $download -ErrorAction SilentlyContinue
+}
+Remove-Item (Join-Path $PSScriptRoot '__pycache__\update-*') -Force -ErrorAction SilentlyContinue
+if ($updated -contains 'requirements.txt') {
+    cmd /c "python -m pip install --quiet --disable-pip-version-check -r requirements.txt >> `"$logFile`" 2>&1"
+}
+if ($updated) { Add-Content -Path $logFile -Encoding ASCII -Value "----- Updated from GitHub: $($updated -join ', ') -----" }
+if ($updateProblems) { Add-Content -Path $logFile -Encoding ASCII -Value "----- Update skipped ($($updateProblems -join '; ')) - running the version already here -----" }
+
 # Through cmd rather than PowerShell's *>> redirect: PowerShell 5.1 wraps
 # every line a native program writes to stderr -- which is where Python's
 # logging goes, INFO lines included -- in a NativeCommandError, so the old
