@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Pulls Daily Sales, Daily Purchase, Daily Profit & Loss and Daily Cash
-Vouchers out of a local Tally Prime install (via its HTTP/XML export
+Pulls Daily Sales, Proforma Invoices, Daily Purchase, Daily Profit & Loss
+and Daily Cash Vouchers out of a local Tally Prime install (via its HTTP/XML export
 gateway) and writes one document per day to Firestore, for the
 rs-infotech dashboard (../rs-infotech/index.html) to read. Alongside that
 it stores Tally's own Profit & Loss for every week, month, quarter,
@@ -515,12 +515,28 @@ def _delivery_challan_records(vouchers, type_parents):
     return records
 
 
-def _filter_by_class(vouchers, type_parents, wanted_parent):
+def _is_proforma(voucher_type_name):
+    """A Proforma Invoice is a quotation, not a sale. Here its voucher type
+    ("Proforma Invoice", confirmed on the dashboard's own Sales list for
+    3 Oct 2026) has Sales as its parent, so it used to be added into the
+    Sales tile with the real Tax Invoices. Matched by name, ignoring case,
+    spaces and hyphens, and allowing the common "Performa" spellings, so a
+    second proforma type named slightly differently is still caught."""
+    letters = re.sub(r"[^a-z]", "", (voucher_type_name or "").lower())
+    return any(word in letters for word in ("proforma", "performa", "perfoma"))
+
+
+def _filter_by_class(vouchers, type_parents, wanted_parent, proforma=False):
+    """Vouchers whose type has wanted_parent as its base type, with their
+    bill totals (GST included). proforma=False leaves Proforma Invoices
+    out; proforma=True returns only them, whatever their parent."""
     result = []
     total = 0.0
     for v in vouchers:
         vch_type = _text(v, "VOUCHERTYPENAME")
-        if type_parents.get(vch_type.strip().lower()) != wanted_parent:
+        if _is_proforma(vch_type) != proforma:
+            continue
+        if not proforma and type_parents.get(vch_type.strip().lower()) != wanted_parent:
             continue
         amount = _voucher_amount(v)
         result.append({
@@ -652,6 +668,15 @@ def fetch_profit_and_loss(date, dump_raw_dir=None, to_date=None):
                 return key[len(prefix):].strip()
         return key
 
+    # Tally's own Sales Accounts and Purchase Accounts lines, kept apart as
+    # well as added into the totals: they are the sales and purchases before
+    # GST, exactly as Tally reports them, which is what the Sales and
+    # Purchase tiles show. Adding up the invoices can't give that figure --
+    # an invoice's total includes GST, and that was why the Sales tile read
+    # Rs.32,23,396 for 1 Sep 2026 against Tally's Rs.27,30,991.
+    BOOKS_GROUPS = {"sales accounts": "sales_accounts", "purchase accounts": "purchase_accounts"}
+    books = {"sales_accounts": 0.0, "purchase_accounts": 0.0}
+
     total_income = 0.0
     total_expense = 0.0
     opening_stock = 0.0
@@ -676,6 +701,8 @@ def fetch_profit_and_loss(date, dump_raw_dir=None, to_date=None):
             # magnitude here, not Tally's display sign for that line.
             amount = abs(amount)
             key = _normalized_group_key(pending_name)
+            if key in BOOKS_GROUPS:
+                books[BOOKS_GROUPS[key]] += amount
             if key in INCOME_GROUPS:
                 total_income += amount
                 matched_any = True
@@ -723,6 +750,8 @@ def fetch_profit_and_loss(date, dump_raw_dir=None, to_date=None):
             "total_expense": 0.0,
             "opening_stock": 0.0,
             "closing_stock": 0.0,
+            "sales_accounts": 0.0,
+            "purchase_accounts": 0.0,
         }
 
     if not matched_any:
@@ -742,6 +771,8 @@ def fetch_profit_and_loss(date, dump_raw_dir=None, to_date=None):
         "total_expense": round(total_expense, 2),
         "opening_stock": round(opening_stock, 2),
         "closing_stock": round(closing_stock, 2),
+        "sales_accounts": round(books["sales_accounts"], 2),
+        "purchase_accounts": round(books["purchase_accounts"], 2),
     }
 
 
@@ -935,15 +966,17 @@ def _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, bank_ledg
         "date": date.strftime("%Y-%m-%d"),
         "synced_at": datetime.datetime.now().isoformat(),
         "sales": _filter_by_class(vouchers, voucher_type_parents, "sales"),
+        "proforma": _filter_by_class(vouchers, voucher_type_parents, "sales", proforma=True),
         "purchase": _filter_by_class(vouchers, voucher_type_parents, "purchase"),
         "profit_and_loss": fetch_profit_and_loss(date, dump_raw_dir),
         "cash_vouchers": _cash_vouchers_from(vouchers, cash_ledgers),
         "bank_vouchers": _bank_vouchers_from(vouchers, bank_ledgers),
     }
     log.info(
-        "%s: Sales Rs.%s (%d vch) | Purchase Rs.%s (%d vch) | P&L %s | Cash vouchers %d | Bank vouchers %d",
+        "%s: Sales Rs.%s (%d vch) | Proforma Rs.%s (%d vch) | Purchase Rs.%s (%d vch) | P&L %s | Cash vouchers %d | Bank vouchers %d",
         payload["date"],
         payload["sales"]["total"], payload["sales"]["count"],
+        payload["proforma"]["total"], payload["proforma"]["count"],
         payload["purchase"]["total"], payload["purchase"]["count"],
         ("needs review" if payload["profit_and_loss"]["needs_review"]
          else f"Rs.{payload['profit_and_loss']['net_profit_loss']}"),

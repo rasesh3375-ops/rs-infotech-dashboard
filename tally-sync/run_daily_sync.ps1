@@ -48,7 +48,13 @@ if (Test-Path $pythonFile) {
 $yesterday = (Get-Date).AddDays(-1)
 $to = $yesterday.ToString('yyyy-MM-dd')
 $marker = Join-Path $PSScriptRoot 'last_full_resync.txt'
-$fullResync = -not (Test-Path $marker) -or ((Get-Date) - (Get-Item $marker).LastWriteTime).TotalDays -ge 7
+# Raised whenever sync_tally.py starts storing something new on every day,
+# so the next run rewrites the whole year instead of leaving the older days
+# without it for up to a week. 2: Proforma Invoices kept apart from Sales,
+# and Tally's before-GST Sales and Purchase figures (October 2026).
+$dataFormat = 'data-format 2'
+$fullResync = -not (Test-Path $marker) -or ((Get-Date) - (Get-Item $marker).LastWriteTime).TotalDays -ge 7 -or
+    ((Get-Content $marker -Raw) -notmatch [regex]::Escape($dataFormat))
 if ($fullResync) {
     $fyYear = if ($yesterday.Month -ge 4) { $yesterday.Year } else { $yesterday.Year - 1 }
     $from = "$fyYear-04-01"
@@ -124,5 +130,5 @@ cmd /c "python sync_tally.py --backfill-from $from --backfill-to $to >> `"$logFi
 $exitCode = $LASTEXITCODE
 Add-Content -Path $logFile -Encoding ASCII -Value "----- Exit code: $exitCode -----"
 if ($fullResync -and $exitCode -eq 0) {
-    Set-Content -Path $marker -Encoding ASCII -Value $timestamp
+    Set-Content -Path $marker -Encoding ASCII -Value "$dataFormat $timestamp"
 }
