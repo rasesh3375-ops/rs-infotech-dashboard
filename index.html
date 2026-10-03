@@ -89,7 +89,22 @@
   }
   .period-arrow:hover{ background:var(--ring-track); }
   .period-arrow:disabled{ opacity:0.35; cursor:default; background:var(--bg); }
-  .period-range{ font-size:13px; font-weight:600; color:var(--text); }
+  /* The day or period every tile is showing, as a pill: blue while it is
+     the current one, amber once the arrows have stepped back -- the owner
+     pressed ‹ a few times, saw 29 Sep's figures and took them for random
+     numbers, because the only sign of the date was plain text at the far
+     end of the bar. */
+  .period-now{ display:flex; align-items:center; gap:8px; }
+  .period-range{
+    font-size:13px; font-weight:700; padding:4px 11px; border-radius:7px;
+    background:rgba(20,83,154,0.10); color:var(--blue); border:1px solid rgba(20,83,154,0.30);
+  }
+  .period-range.past{ background:#fff3d6; color:#8a5a00; border-color:#e7c26b; }
+  .back-today{
+    display:none; padding:4px 10px; border-radius:7px; border:1px solid var(--blue); background:var(--blue);
+    color:#fff; font-family:'Inter',sans-serif; font-size:12px; font-weight:700; cursor:pointer;
+  }
+  .back-today.show{ display:inline-block; }
   .date-col{ display:none; }
   .dash-grid.multi-day .date-col{ display:table-cell; white-space:nowrap; }
   .pl-period-btn{
@@ -245,7 +260,10 @@
       <button class="pl-period-btn" data-period="yearly">Yearly</button>
       <button class="period-arrow" id="periodNext" title="Next">›</button>
     </div>
-    <div class="period-range" id="periodRange"></div>
+    <div class="period-now">
+      <div class="period-range" id="periodRange"></div>
+      <button class="back-today" id="backToToday">Back to today</button>
+    </div>
   </div>
 
   <div class="dash-grid">
@@ -840,6 +858,12 @@ function loadView(){
   document.querySelectorAll('#periodBtns .pl-period-btn').forEach(b => b.classList.toggle('active', b.dataset.period === period));
   // Nothing after today has been synced, so there's no next period to go to.
   document.getElementById('periodNext').disabled = endIso >= today;
+  const showingPast = endIso < today;
+  document.getElementById('periodRange').classList.toggle('past', showingPast);
+  document.getElementById('periodRange').title = showingPast ? 'Every tile except the two pending lists shows this ' + PL_PERIOD_LABELS[period] : '';
+  document.getElementById('backToToday').classList.toggle('show', showingPast);
+  document.getElementById('periodPrev').title = 'Previous ' + PL_PERIOD_LABELS[period];
+  document.getElementById('periodNext').title = 'Next ' + PL_PERIOD_LABELS[period];
   document.querySelector('.dash-grid').classList.toggle('multi-day', period !== 'daily');
 
   if (period === 'daily'){
@@ -935,6 +959,12 @@ wireExpandableCard('challanCard', 'challanDetail');
 document.getElementById('btnToday').addEventListener('click', () => {
   currentAnchorDateIso = todayISO();
   currentPeriod = 'daily';
+  loadView();
+});
+// Back to today keeps the period: after stepping back through months it
+// returns to this month, not to today's single day.
+document.getElementById('backToToday').addEventListener('click', () => {
+  currentAnchorDateIso = todayISO();
   loadView();
 });
 
