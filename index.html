@@ -63,6 +63,16 @@
     font-size:30px; font-weight:800; line-height:1; color:var(--black);
   }
   .stat-count.negative{ color:var(--red); }
+  /* The two pending lists: their count is work still to be invoiced, so it
+     is red whatever the number. */
+  .stat-count.pending{ color:var(--red); }
+  /* "Proforma Invoice (Pending for Invoice)" on one line, as the owner
+     asked. It doesn't fit a quarter-width tile on their laptop (about
+     1145px wide), so the Proforma tile spans the two columns the second
+     row left empty anyway, at the same heading size as the others. */
+  .card .kicker.one-line{ white-space:nowrap; }
+  #proformaCard{ grid-column:span 2; }
+  @media (max-width: 640px){ #proformaCard{ grid-column:auto; } }
   .stat-sub{ font-size:12.5px; color:var(--text-dim); margin-top:6px; }
 
   .card.expandable{ cursor:pointer; }
@@ -328,7 +338,7 @@
 
     <div class="card expandable" id="challanCard">
       <div class="kicker">Pending Delivery Challans</div>
-      <div class="stat-count" id="challanTotal">–</div>
+      <div class="stat-count pending" id="challanTotal">–</div>
       <div class="stat-sub" id="challanCount">Loading…</div>
       <div class="tap-hint">Tap for challan-wise detail</div>
       <div class="voucher-detail-panel tall" id="challanDetail">
@@ -340,8 +350,8 @@
     </div>
 
     <div class="card expandable" id="proformaCard">
-      <div class="kicker">Proforma Invoice (Pending for Invoice)</div>
-      <div class="stat-count" id="proformaTotal">–</div>
+      <div class="kicker one-line">Proforma Invoice (Pending for Invoice)</div>
+      <div class="stat-count pending" id="proformaTotal">–</div>
       <div class="stat-sub" id="proformaCount">Loading…</div>
       <div class="tap-hint">Tap for proforma-wise detail</div>
       <div class="voucher-detail-panel tall" id="proformaDetail">
