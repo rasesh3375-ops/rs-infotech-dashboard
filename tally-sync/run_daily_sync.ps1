@@ -122,6 +122,42 @@ if ($updated -contains 'requirements.txt') {
 if ($updated) { Add-Content -Path $logFile -Encoding ASCII -Value "----- Updated from GitHub: $($updated -join ', ') -----" }
 if ($updateProblems) { Add-Content -Path $logFile -Encoding ASCII -Value "----- Update skipped ($($updateProblems -join '; ')) - running the version already here -----" }
 
+# --- Sync now listener -----------------------------------------------------
+# sync_tally.py --listen answers the dashboard's Sync now button and syncs
+# today hourly during office hours (see run_listener). It's installed from
+# here, so every PC already running this sync gets it with nothing done by
+# hand: a task that starts it at logon and every ten minutes after, in case
+# it stopped (a second copy finds the first one's lock and exits at once).
+# pythonw runs it without a window. Registered only when missing, or when
+# the Python it points at has gone, so a running listener isn't disturbed.
+$listenerTask = 'RS Infotech Tally Sync Listener'
+try {
+    $existing = Get-ScheduledTask -TaskName $listenerTask -ErrorAction SilentlyContinue
+    if (-not $existing -or -not (Test-Path $existing.Actions[0].Execute)) {
+        $pythonExe = (& python -c "import sys;print(sys.executable)" 2>$null | Select-Object -Last 1)
+        if (-not $pythonExe) { throw 'python could not be run' }
+        $pythonw = Join-Path (Split-Path -Parent $pythonExe.Trim()) 'pythonw.exe'
+        if (-not (Test-Path $pythonw)) { $pythonw = $pythonExe.Trim() }
+        $action = New-ScheduledTaskAction -Execute $pythonw -Argument "`"$PSScriptRoot\sync_tally.py`" --listen" -WorkingDirectory $PSScriptRoot
+        $triggers = @(New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME")
+        # Repeating with no end date has to be left implicit, and older
+        # Windows versions refuse that; there the logon trigger and the
+        # restart below each morning still keep it running.
+        try { $triggers += New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 10) -ErrorAction Stop } catch { }
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
+            -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+        $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive
+        Register-ScheduledTask -TaskName $listenerTask -Action $action -Trigger $triggers -Settings $settings `
+            -Principal $principal -Force -ErrorAction Stop | Out-Null
+        Add-Content -Path $logFile -Encoding ASCII -Value "----- Installed the Sync now listener ($pythonw) -----"
+    }
+    if ((Get-ScheduledTask -TaskName $listenerTask -ErrorAction Stop).State -ne 'Running') {
+        Start-ScheduledTask -TaskName $listenerTask
+    }
+} catch {
+    Add-Content -Path $logFile -Encoding ASCII -Value "----- Could not set up the Sync now listener: $($_.Exception.Message) -----"
+}
+
 # Through cmd rather than PowerShell's *>> redirect: PowerShell 5.1 wraps
 # every line a native program writes to stderr -- which is where Python's
 # logging goes, INFO lines included -- in a NativeCommandError, so the old

@@ -35,11 +35,15 @@ because one report was odd.
 """
 
 import argparse
+import contextlib
 import datetime
 import json
 import logging
+import logging.handlers
 import os
+import platform
 import re
+import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
@@ -83,6 +87,16 @@ PERIOD_NAMES = ("weekly", "monthly", "quarterly", "half_yearly", "yearly")
 # dashboard read that collection; a collection of its own would need the
 # rules edited by hand in the Firebase console first.
 PENDING_PROFORMA_DOC = "pending_proforma_invoices"
+
+# The dashboard's Sync now button and this PC's answer to it -- see
+# run_listener. "request" is the one document the dashboard may write
+# (the Firestore rules allow nothing else); "status" is written only here.
+SYNC_CONTROL_COLLECTION = "sync_control"
+
+# The listener also syncs today once an hour between these hours (inclusive,
+# this PC's clock), so today's tiles are never much more than an hour old.
+HOURLY_SYNC_FROM_HOUR = 10
+HOURLY_SYNC_TO_HOUR = 20
 
 REQUEST_TIMEOUT_SECONDS = 120
 
@@ -1175,6 +1189,188 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
     sync_period_reports(from_date, to_date, dry_run=dry_run, dump_raw_dir=dump_raw_dir)
 
 
+# ---------------------------------------------------------------------------
+# One sync at a time, and the Sync now listener
+# ---------------------------------------------------------------------------
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+@contextlib.contextmanager
+def _exclusive_lock(name, wait_seconds):
+    """Holds an OS file lock in this folder for the duration, waiting up to
+    wait_seconds for whoever has it. The OS drops the lock if the holder
+    dies, so a crashed run never leaves it stuck.
+
+    Two syncs used to be impossible -- one task, once a day. With the
+    listener's hourly and on-demand syncs alongside the 10 AM run they can
+    overlap, and Tally has hung here before under nothing worse than one
+    slow request, so a second sync waits for the first instead.
+    """
+    handle = open(os.path.join(SCRIPT_DIR, name), "a+")
+    deadline = time.time() + wait_seconds
+    while True:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            if time.time() >= deadline:
+                handle.close()
+                raise TallyError(f"Another sync is still running ({name} is locked).")
+            time.sleep(5)
+    try:
+        yield
+    finally:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            handle.close()
+
+
+def _utc_now():
+    # Stored in UTC with the zone attached, so the dashboard shows the right
+    # time wherever it's opened -- the owner checks it from abroad.
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+LISTENER_POLL_SECONDS = 20
+LISTENER_HEARTBEAT_SECONDS = 300
+# A press older than this was made while this PC was off; syncing for it
+# whenever the PC next starts would only surprise someone.
+LISTENER_STALE_REQUEST_MINUTES = 30
+
+
+class _Listener:
+    """The state run_listener carries between polls. Each tick reads the
+    request document once and acts on at most one thing, so it can be
+    driven and tested one poll at a time."""
+
+    def __init__(self, db, run_sync):
+        self.control = db.collection(SYNC_CONTROL_COLLECTION)
+        self.run_sync = run_sync
+        self.host = platform.node()
+        status = self.control.document("status").get()
+        status = (status.to_dict() or {}) if status.exists else {}
+        self.handled_request_id = status.get("handled_request_id")
+        self.last_hourly_slot = status.get("last_hourly_slot")
+        self.last_beat = 0.0
+
+    def _status(self, fields):
+        self.control.document("status").set(fields, merge=True)
+
+    def tick(self, now_local, now_utc):
+        if time.time() - self.last_beat >= LISTENER_HEARTBEAT_SECONDS:
+            self._status({"listener_seen_at": now_utc.isoformat(), "host": self.host})
+            self.last_beat = time.time()
+
+        request = self.control.document("request").get()
+        request = (request.to_dict() or {}) if request.exists else {}
+        request_id = request.get("request_id")
+        if request_id and request_id != self.handled_request_id:
+            self.handled_request_id = request_id
+            requested_at = request.get("requested_at")
+            fresh = (requested_at is not None and
+                     now_utc - requested_at <= datetime.timedelta(minutes=LISTENER_STALE_REQUEST_MINUTES))
+            if fresh:
+                log.info("Sync now pressed by %s", request.get("requested_by") or "the dashboard")
+                self._sync("button", {"handled_request_id": request_id})
+            else:
+                log.info("Ignoring a Sync now press from %s -- older than %d minutes",
+                          requested_at, LISTENER_STALE_REQUEST_MINUTES)
+                self._status({"handled_request_id": request_id})
+            return
+
+        slot = now_local.strftime("%Y-%m-%dT%H")
+        if (HOURLY_SYNC_FROM_HOUR <= now_local.hour <= HOURLY_SYNC_TO_HOUR
+                and slot != self.last_hourly_slot):
+            self.last_hourly_slot = slot
+            self._sync("hourly", {"last_hourly_slot": slot})
+
+    def _sync(self, trigger, extra):
+        self._status({**extra, "state": "running", "trigger": trigger, "host": self.host,
+                      "started_at": _utc_now().isoformat()})
+        ok, message = self.run_sync()
+        self._status({"state": "idle", "ok": ok, "message": message, "trigger": trigger,
+                      "finished_at": _utc_now().isoformat()})
+        log.info("%s sync %s%s", trigger, "done" if ok else "FAILED", f" -- {message}" if message else "")
+
+
+def _sync_today_in_subprocess():
+    """Runs "sync_tally.py" for today as its own process, so every sync uses
+    the copy on disk -- which the 10 AM run keeps up to date from GitHub --
+    rather than whatever version this long-running listener started with.
+    Returns (ok, message), the message being the last error line, worded
+    for the dashboard."""
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        proc = subprocess.run([sys.executable, os.path.abspath(__file__)], cwd=SCRIPT_DIR,
+                              capture_output=True, text=True, timeout=45 * 60, creationflags=flags)
+    except subprocess.TimeoutExpired:
+        return False, "The sync took over 45 minutes and was stopped -- Tally may have hung."
+    output = (proc.stdout or "") + (proc.stderr or "")
+    for line in output.splitlines():
+        log.info("  | %s", line)
+    if proc.returncode == 0:
+        return True, ""
+    errors = [line.split("] ", 1)[-1] for line in output.splitlines() if "[ERROR]" in line]
+    message = errors[-1] if errors else f"The sync stopped with exit code {proc.returncode}."
+    if "Could not reach Tally" in message or "did not respond" in message:
+        message = f"Tally is not open on {platform.node()}, or not answering. " + message
+    return False, message[:400]
+
+
+def run_listener():
+    """Waits for the dashboard's Sync now button and syncs today when it's
+    pressed, and also syncs today once an hour between HOURLY_SYNC_FROM_HOUR
+    and HOURLY_SYNC_TO_HOUR. run_daily_sync.ps1 registers a scheduled task
+    that starts this at logon and restarts it every ten minutes if it isn't
+    running (only one copy runs: the second one finds the lock taken and
+    exits).
+
+    Without it the dashboard only had today's figures when someone ran a
+    sync by hand at the Tally PC: the 10 AM run syncs up to yesterday.
+
+    The dashboard can't reach Tally itself -- it's a website, and Tally is on
+    a PC in the office -- so the button only writes a request document, and
+    this polls for it every LISTENER_POLL_SECONDS. Polling rather than a
+    live Firestore listener because it simply picks up again after the
+    office internet drops, and costs about 4,300 reads a day, well inside
+    the free allowance. It exits when sync_tally.py on disk changes, so the
+    restart picks up the new version.
+    """
+    try:
+        lock = _exclusive_lock("listener.lock", 0)
+        lock.__enter__()
+    except TallyError:
+        log.info("The listener is already running on this PC.")
+        return 0
+    started_version = os.path.getmtime(os.path.abspath(__file__))
+    log.info("Listening for Sync now on %s (and syncing today hourly, %d:00-%d:59)",
+             platform.node(), HOURLY_SYNC_FROM_HOUR, HOURLY_SYNC_TO_HOUR)
+    listener = None
+    while True:
+        try:
+            if listener is None:
+                listener = _Listener(_firestore_db(), _sync_today_in_subprocess)
+            listener.tick(datetime.datetime.now(), _utc_now())
+        except Exception as e:
+            # Most likely the office internet dropped; the next poll retries.
+            log.warning("Listener poll failed: %s", e)
+        if os.path.getmtime(os.path.abspath(__file__)) != started_version:
+            log.info("sync_tally.py was updated -- exiting so the scheduled task restarts the new version.")
+            return 0
+        time.sleep(LISTENER_POLL_SECONDS)
+
+
 def run_check():
     """Checks the two things a sync needs, the same way a sync uses them,
     and prints one CHECK line for each: the Firebase key (reads from the
@@ -1219,26 +1415,35 @@ def main():
     parser.add_argument("--dump-raw-dir", default=None, help="Save every raw Tally XML response here for debugging")
     parser.add_argument("--check", action="store_true",
                         help="Only check that the Firebase key works and Tally answers with the company readable, then exit")
+    parser.add_argument("--listen", action="store_true",
+                        help="Keep running: sync today when the dashboard's Sync now button is pressed, and hourly")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-    )
+    log_format = "%(asctime)s [%(levelname)s] %(message)s"
+    if args.listen:
+        # Started by pythonw, which has no console to log to. Capped at
+        # about 4 MB in all, since it runs for months.
+        logging.basicConfig(level=logging.INFO, format=log_format, handlers=[
+            logging.handlers.RotatingFileHandler(os.path.join(SCRIPT_DIR, "sync_listener_log.txt"),
+                                                 maxBytes=2_000_000, backupCount=1, encoding="utf-8")])
+        sys.exit(run_listener())
+
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format=log_format)
 
     if args.check:
         sys.exit(run_check())
 
     try:
-        if args.backfill_from:
-            from_date = datetime.datetime.strptime(args.backfill_from, "%Y-%m-%d").date()
-            to_date = (datetime.datetime.strptime(args.backfill_to, "%Y-%m-%d").date()
-                       if args.backfill_to else datetime.date.today())
-            run_backfill(from_date, to_date, dry_run=args.dry_run, dump_raw_dir=args.dump_raw_dir)
-        else:
-            date = (datetime.datetime.strptime(args.date, "%Y-%m-%d").date()
-                    if args.date else datetime.date.today())
-            run(date, dry_run=args.dry_run, dump_raw_dir=args.dump_raw_dir)
+        with _exclusive_lock("sync.lock", 40 * 60):
+            if args.backfill_from:
+                from_date = datetime.datetime.strptime(args.backfill_from, "%Y-%m-%d").date()
+                to_date = (datetime.datetime.strptime(args.backfill_to, "%Y-%m-%d").date()
+                           if args.backfill_to else datetime.date.today())
+                run_backfill(from_date, to_date, dry_run=args.dry_run, dump_raw_dir=args.dump_raw_dir)
+            else:
+                date = (datetime.datetime.strptime(args.date, "%Y-%m-%d").date()
+                        if args.date else datetime.date.today())
+                run(date, dry_run=args.dry_run, dump_raw_dir=args.dump_raw_dir)
     except TallyError as e:
         log.error("Tally error: %s", e)
         sys.exit(1)

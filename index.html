@@ -198,6 +198,12 @@
     animation: pulse 1.6s ease-in-out infinite;
   }
   @keyframes pulse{ 0%,100%{ opacity:1; } 50%{ opacity:0.3; } }
+  .sync-now{ margin-left:auto; display:flex; align-items:center; gap:8px; min-width:0; }
+  .sync-state{ font-size:12.5px; color:var(--text-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:420px; }
+  .sync-state.busy{ color:var(--blue); font-weight:600; }
+  .sync-state.bad{ color:var(--red); }
+  .ctrl-btn:disabled{ opacity:0.5; cursor:default; background:var(--bg); }
+  .sync-now + .logout-link{ margin-left:4px; }
   .logout-link{ margin-left:auto; font-size:13px; color:var(--text-dim); cursor:pointer; text-decoration:underline; }
   .logout-link:hover{ color:var(--text); }
 </style>
@@ -248,6 +254,10 @@
     <span style="width:1px;height:22px;background:var(--panel-edge);"></span>
     <input type="date" class="ctrl-date-input" id="pickDate">
     <button class="ctrl-btn" id="btnPickDate">View date</button>
+    <span class="sync-now">
+      <span class="sync-state" id="syncState"></span>
+      <button class="ctrl-btn" id="btnSyncNow" title="Sync today's figures from Tally now">Sync now</button>
+    </span>
     <span class="logout-link" id="logoutLink">Log out</span>
   </div>
   <div class="view-label" id="viewLabel"><span class="live-dot"></span> Showing: Today (live)</div>
@@ -386,6 +396,7 @@ const COLLECTION = 'daily_reports';
 const CHALLAN_COLLECTION = 'delivery_challans';
 const PERIOD_COLLECTION = 'period_reports';
 const PENDING_PROFORMA_DOC = 'pending_proforma_invoices';
+const SYNC_CONTROL_COLLECTION = 'sync_control';
 
 function fmtINR(n){
   n = Math.round(n || 0);
@@ -796,6 +807,105 @@ function attachProformaListener(){
   );
 }
 
+// ---------------------------------------------------------------------
+// Sync now
+// ---------------------------------------------------------------------
+// This page can't reach Tally -- it's on a PC in the office -- so the
+// button writes sync_control/request (the one document the Firestore rules
+// let this page write), and sync_tally.py --listen on the Tally PC picks it
+// up within about 20 seconds, syncs today, and reports back in
+// sync_control/status. That listener also syncs today hourly from 10 AM to
+// 8 PM and checks in every five minutes, which is how this can say the PC
+// is offline. The 10 AM daily sync carries on as before.
+let syncStatus = null;         // sync_control/status; undefined = can't read it
+let syncRequest = null;        // { id, at } for a press not yet answered
+let syncLastFinished = null;
+let syncStatusUnsubscribe = null;
+const SYNC_PC_OFFLINE_MS = 12 * 60 * 1000;   // listener checks in every 5 min
+const SYNC_NO_ANSWER_MS = 90 * 1000;         // it polls every 20 s
+
+function syncWhen(iso){
+  const d = new Date(iso);
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return toISO(d) === todayISO() ? time : time + ', ' + d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+}
+
+function renderSyncState(){
+  const el = document.getElementById('syncState');
+  const btn = document.getElementById('btnSyncNow');
+  let text, cls = '';
+  if (syncStatus === undefined){
+    text = 'Sync now needs its one-time Firebase setting';
+    cls = 'bad';
+    btn.disabled = true;
+  } else {
+    const st = syncStatus || {};
+    const seen = st.listener_seen_at ? Date.parse(st.listener_seen_at) : 0;
+    const online = seen && Date.now() - seen < SYNC_PC_OFFLINE_MS;
+    const running = st.state === 'running';
+    const waiting = syncRequest && st.handled_request_id !== syncRequest.id;
+    const noAnswer = waiting && Date.now() - syncRequest.at > SYNC_NO_ANSWER_MS;
+    if (noAnswer){
+      text = "The Tally PC didn't answer — is it switched on and logged in?";
+      cls = 'bad';
+    } else if (waiting){
+      text = 'Asking the Tally PC…'; cls = 'busy';
+    } else if (running){
+      text = 'Syncing from Tally…'; cls = 'busy';
+    } else if (!st.finished_at){
+      text = online ? 'Tally PC connected' : 'Tally PC not connected yet';
+    } else if (st.ok){
+      text = 'Synced ' + syncWhen(st.finished_at);
+    } else {
+      text = 'Sync failed ' + syncWhen(st.finished_at) + (st.message ? ': ' + st.message : '');
+      cls = 'bad';
+    }
+    if (seen && !online && !waiting && !running) text += ' · Tally PC offline since ' + syncWhen(st.listener_seen_at);
+    btn.disabled = running || (waiting && !noAnswer);
+  }
+  el.textContent = text;
+  el.title = text;
+  el.className = 'sync-state' + (cls ? ' ' + cls : '');
+}
+
+function attachSyncStatusListener(){
+  detachSyncStatusListener();
+  syncLastFinished = null;
+  syncStatusUnsubscribe = db.collection(SYNC_CONTROL_COLLECTION).doc('status').onSnapshot(
+    (doc) => {
+      syncStatus = doc.exists ? doc.data() : null;
+      const finished = syncStatus && syncStatus.finished_at;
+      // A sync that has just finished: redraw whatever is on screen, since
+      // only today's own document updates by itself. Not on the first read.
+      if (syncLastFinished !== null && finished && finished !== syncLastFinished && syncStatus.ok) loadView();
+      syncLastFinished = finished || '';
+      renderSyncState();
+    },
+    (error) => { console.error(error); syncStatus = undefined; renderSyncState(); }
+  );
+}
+function detachSyncStatusListener(){
+  if (syncStatusUnsubscribe){ syncStatusUnsubscribe(); syncStatusUnsubscribe = null; }
+}
+setInterval(renderSyncState, 10000);
+
+document.getElementById('btnSyncNow').addEventListener('click', () => {
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  syncRequest = { id, at: Date.now() };
+  renderSyncState();
+  db.collection(SYNC_CONTROL_COLLECTION).doc('request').set({
+    request_id: id,
+    requested_at: firebase.firestore.FieldValue.serverTimestamp(),
+    requested_by: (auth.currentUser && auth.currentUser.email) || '',
+  }).catch((e) => {
+    console.error(e);
+    syncRequest = null;
+    if (e && e.code === 'permission-denied') syncStatus = undefined;
+    renderSyncState();
+    if (syncStatus !== undefined) document.getElementById('syncState').textContent = 'Could not send the sync request — check your internet connection.';
+  });
+});
+
 function setActiveButton(id){
   document.querySelectorAll('.ctrl-btn').forEach(b => b.classList.remove('active'));
   if (id) document.getElementById(id)?.classList.add('active');
@@ -1115,6 +1225,7 @@ auth.onAuthStateChanged((user) => {
     loadView();
     attachChallanListener();
     attachProformaListener();
+    attachSyncStatusListener();
   } else if (handlingEmailLink) {
     // Mid sign-in via the emailed link -- leave whatever screen is
     // already showing (checkEmail while it resolves, or login if it just
@@ -1126,6 +1237,7 @@ auth.onAuthStateChanged((user) => {
     detachLiveListener();
     detachChallanListener();
     detachProformaListener();
+    detachSyncStatusListener();
   }
 });
 </script>

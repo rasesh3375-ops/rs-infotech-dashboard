@@ -2,3 +2,5 @@ tally-sync/service-account.json
 tally-sync/raw/
 __pycache__/
 *.pyc
+tally-sync/*.lock
+tally-sync/*_log.txt*
