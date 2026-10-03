@@ -460,6 +460,13 @@ def _delivery_challan_doc_id(date_iso, voucher_no):
     return f"{date_iso}_{safe_no}"
 
 
+def _earliest_voucher_date(vouchers):
+    """Earliest voucher date in a fetch, as YYYY-MM-DD -- the start of what
+    this run can actually see in Tally (see push_delivery_challans_to_firestore)."""
+    dates = [d for d in (_tally_date_to_iso(_text(v, "DATE")) for v in vouchers) if len(d) == 10]
+    return min(dates) if dates else "9999-12-31"
+
+
 def _delivery_challan_records(vouchers, type_parents):
     """Every Delivery Note voucher Tally has, in the shape the dashboard's
     Pending Delivery Challan list expects.
@@ -745,10 +752,12 @@ def push_to_firestore(date_iso, payload):
     db.collection(FIRESTORE_COLLECTION).document(date_iso).set(payload)
 
 
-def push_delivery_challans_to_firestore(records):
+def push_delivery_challans_to_firestore(records, covered_from):
     """Upserts every Delivery Note into DELIVERY_CHALLAN_COLLECTION, one
     document per voucher, keyed by _delivery_challan_doc_id so the same
-    voucher always lands on the same document across repeated syncs.
+    voucher always lands on the same document across repeated syncs, then
+    removes pending documents for Delivery Notes Tally no longer has.
+    Returns how many were removed.
 
     merge=True is what makes this safe to call on every single run without
     needing to know whether a document already exists: each record here
@@ -757,6 +766,23 @@ def push_delivery_challans_to_firestore(records):
     would silently reset a challan someone had already marked billed back
     to pending on the very next sync, which is exactly the bug this is
     written to avoid.
+
+    The removal exists because upserting alone only ever adds. The first
+    live run showed 49 pending challans on the dashboard against 48 Delivery
+    Notes in Tally: a Delivery Note edited to a new date or number gets a new
+    document and the old one stayed pending for good, and one deleted in
+    Tally (which also happens here once it's invoiced -- 55 Delivery Notes on
+    23 Sep, 48 on 3 Oct) did the same. Three limits keep this from deleting
+    anything it shouldn't:
+      - a challan someone marked billed is never removed -- it's the record
+        of that click, whatever happened in Tally afterwards;
+      - only documents dated on or after covered_from, the earliest voucher
+        date in this fetch, are considered. Tally only hands back the current
+        financial year, so on 1 April a still-pending challan from March is
+        merely out of view, not deleted, and has to stay;
+      - nothing is removed when this run found no Delivery Notes at all,
+        which looks the same as voucher types failing to classify, and
+        emptying the whole list on a bad read is the worse mistake.
     """
     import firebase_admin
     from firebase_admin import credentials, firestore
@@ -772,21 +798,41 @@ def push_delivery_challans_to_firestore(records):
         firebase_admin.initialize_app(cred)
 
     db = firestore.client()
+    collection = db.collection(DELIVERY_CHALLAN_COLLECTION)
     batch = db.batch()
     pending = 0
-    # Firestore caps a single batch at 500 writes -- commit in chunks well
-    # under that rather than assume the challan count never grows past it.
-    for rec in records:
-        doc_id = rec["doc_id"]
-        data = {k: v for k, v in rec.items() if k != "doc_id"}
-        batch.set(db.collection(DELIVERY_CHALLAN_COLLECTION).document(doc_id), data, merge=True)
+
+    def queued():
+        # Firestore caps a single batch at 500 writes -- commit in chunks well
+        # under that rather than assume the challan count never grows past it.
+        nonlocal batch, pending
         pending += 1
         if pending >= 400:
             batch.commit()
             batch = db.batch()
             pending = 0
+
+    for rec in records:
+        data = {k: v for k, v in rec.items() if k != "doc_id"}
+        batch.set(collection.document(rec["doc_id"]), data, merge=True)
+        queued()
+
+    removed = 0
+    if records:
+        current_ids = {rec["doc_id"] for rec in records}
+        for doc in collection.stream():
+            data = doc.to_dict() or {}
+            if doc.id in current_ids or data.get("billed"):
+                continue
+            if (data.get("date") or "") < covered_from:
+                continue
+            batch.delete(doc.reference)
+            queued()
+            removed += 1
+
     if pending:
         batch.commit()
+    return removed
 
 
 # ---------------------------------------------------------------------------
@@ -875,9 +921,9 @@ def run(date, dry_run=False, dump_raw_dir=None):
         return
 
     push_to_firestore(date_iso, payload)
-    push_delivery_challans_to_firestore(delivery_challans)
-    log.info("Written to Firestore: %s/%s (+%d delivery challans upserted)",
-              FIRESTORE_COLLECTION, date_iso, len(delivery_challans))
+    removed = push_delivery_challans_to_firestore(delivery_challans, _earliest_voucher_date(all_vouchers))
+    log.info("Written to Firestore: %s/%s (+%d delivery challans upserted, %d no longer in Tally removed)",
+              FIRESTORE_COLLECTION, date_iso, len(delivery_challans), removed)
 
 
 def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
@@ -931,11 +977,13 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
     # the whole backfill, not once per day.
     all_vouchers = [v for day_vouchers in vouchers_by_date.values() for v in day_vouchers]
     delivery_challans = _delivery_challan_records(all_vouchers, voucher_type_parents)
+    removed = 0
     if not dry_run:
-        push_delivery_challans_to_firestore(delivery_challans)
+        removed = push_delivery_challans_to_firestore(delivery_challans, _earliest_voucher_date(all_vouchers))
 
-    log.info("Backfill done: %d/%d days written%s. %d delivery challans upserted.", succeeded, day_count,
-              f", {len(failed)} failed ({', '.join(failed)})" if failed else "", len(delivery_challans))
+    log.info("Backfill done: %d/%d days written%s. %d delivery challans upserted, %d no longer in Tally removed.",
+              succeeded, day_count, f", {len(failed)} failed ({', '.join(failed)})" if failed else "",
+              len(delivery_challans), removed)
 
 
 def main():
