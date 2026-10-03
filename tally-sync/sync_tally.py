@@ -474,13 +474,12 @@ def _delivery_challan_records(vouchers, type_parents):
     Tally has no built-in link between a Delivery Note and whatever Sales
     Invoice later bills it -- confirmed against real data, where none of
     this company's Delivery Note vouchers carry a Tracking Number, the only
-    mechanism Tally has for that link (see inspect_delivery_notes.py).
-    "Pending" vs "billed" is therefore not something this can work out on
-    its own: every record here is written with no 'billed' field at all,
-    and a person marks one billed by hand in the dashboard. That field is
-    deliberately absent from what this function returns, and
-    push_delivery_challans_to_firestore below never writes it either -- see
-    that function's docstring for why.
+    mechanism Tally has for that link (see the deleted
+    inspect_delivery_notes.py in git history). So "pending" here means
+    exactly "still a Delivery Note in Tally": once one is deleted or
+    converted to an invoice there, push_delivery_challans_to_firestore
+    removes it on the next sync. The dashboard is view only and records
+    nothing itself; Tally is the single source.
 
     Delivery Notes routinely carry no ledger amount at all (goods go out,
     nothing's been billed yet, so there's often nothing to post to a
@@ -753,29 +752,23 @@ def push_to_firestore(date_iso, payload):
 
 
 def push_delivery_challans_to_firestore(records, covered_from):
-    """Upserts every Delivery Note into DELIVERY_CHALLAN_COLLECTION, one
-    document per voucher, keyed by _delivery_challan_doc_id so the same
-    voucher always lands on the same document across repeated syncs, then
-    removes pending documents for Delivery Notes Tally no longer has.
-    Returns how many were removed.
+    """Makes DELIVERY_CHALLAN_COLLECTION a copy of the Delivery Notes Tally
+    has now: writes each one whole, one document per voucher keyed by
+    _delivery_challan_doc_id, then removes documents for Delivery Notes
+    Tally no longer has. Returns how many were removed.
 
-    merge=True is what makes this safe to call on every single run without
-    needing to know whether a document already exists: each record here
-    never includes a 'billed' field, so merge only ever touches
-    date/voucher_no/party/type/description -- a plain overwriting .set()
-    would silently reset a challan someone had already marked billed back
-    to pending on the very next sync, which is exactly the bug this is
-    written to avoid.
+    Each write replaces the whole document rather than merging, so nothing
+    but what Tally said on this run survives -- including any billed/
+    billed_at/billed_by fields left from when the dashboard briefly had a
+    Mark Billed button.
 
-    The removal exists because upserting alone only ever adds. The first
+    The removal exists because writing alone only ever adds. The first
     live run showed 49 pending challans on the dashboard against 48 Delivery
     Notes in Tally: a Delivery Note edited to a new date or number gets a new
     document and the old one stayed pending for good, and one deleted in
     Tally (which also happens here once it's invoiced -- 55 Delivery Notes on
-    23 Sep, 48 on 3 Oct) did the same. Three limits keep this from deleting
+    23 Sep, 48 on 3 Oct) did the same. Two limits keep this from deleting
     anything it shouldn't:
-      - a challan someone marked billed is never removed -- it's the record
-        of that click, whatever happened in Tally afterwards;
       - only documents dated on or after covered_from, the earliest voucher
         date in this fetch, are considered. Tally only hands back the current
         financial year, so on 1 April a still-pending challan from March is
@@ -814,7 +807,7 @@ def push_delivery_challans_to_firestore(records, covered_from):
 
     for rec in records:
         data = {k: v for k, v in rec.items() if k != "doc_id"}
-        batch.set(collection.document(rec["doc_id"]), data, merge=True)
+        batch.set(collection.document(rec["doc_id"]), data)
         queued()
 
     removed = 0
@@ -822,7 +815,7 @@ def push_delivery_challans_to_firestore(records, covered_from):
         current_ids = {rec["doc_id"] for rec in records}
         for doc in collection.stream():
             data = doc.to_dict() or {}
-            if doc.id in current_ids or data.get("billed"):
+            if doc.id in current_ids:
                 continue
             if (data.get("date") or "") < covered_from:
                 continue
