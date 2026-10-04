@@ -319,11 +319,13 @@
 
     /* The tiles as rows of one list. */
     .dash-grid{ display:flex; flex-direction:column; gap:0; background:var(--panel); border:1px solid var(--panel-edge); border-radius:14px; overflow:hidden; }
-    /* In one list, Sundry Debtors and Creditors read best together, so the
-       two pending lists move after them, and Net profit / loss comes last,
-       as the bottom line -- the owner's choice for the phone. */
-    #challanCard, #proformaCard{ order:1; }
-    .dash-grid .pl-card{ order:2; }
+    /* The phone's own order, as the owner set it: Sales, Purchase, Cash,
+       Bank, Stock, Sundry Debtors, Sundry Creditors, the two pending lists,
+       and Net profit / loss last as the bottom line. The laptop and desktop
+       grid keeps the page's order. */
+    #salesCard{ order:1; } #purchaseCard{ order:2; } #cashCard{ order:3; } #bankCard{ order:4; }
+    #stockCard{ order:5; } #debtorsCard{ order:6; } #creditorsCard{ order:7; }
+    #challanCard{ order:8; } #proformaCard{ order:9; } .dash-grid .pl-card{ order:10; }
     .card{
       display:grid; grid-template-columns:minmax(0, 1fr) auto; column-gap:10px; align-items:center;
       border:0; border-radius:0; box-shadow:none; border-top:1px solid rgba(17,17,17,0.08); padding:11px 14px;
