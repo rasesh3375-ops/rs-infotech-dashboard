@@ -8,11 +8,14 @@ it stores Tally's own Profit & Loss for every week, month, quarter,
 half-year and financial year the synced days fall in, and the open
 Delivery Notes.
 
-Stock Summary is deliberately NOT included here -- computing closing
-stock balances/values as of a date was consistently the slowest thing
-Tally did, and coincided with a real Tally Prime crash (Memory Access
-Violation) on shared company data. Don't add it back without first
-confirming with Tally support why that computation was unstable.
+Stock is handled with care. Computing closing stock balances and values
+as of a date was consistently the slowest thing Tally did, and a Stock
+Summary export once coincided with a real Tally Prime crash (Memory
+Access Violation) on shared company data. So the per-day sync never asks
+for it: the dashboard's stock total is the Closing Stock line of the P&L
+Tally already returns every day, and the item-wise list is a single
+request at most every STOCK_MIN_HOURS, one attempt, a time limit, and a
+pause of STOCK_PAUSE_DAYS after any failure -- see _sync_stock.
 
 Run this on the SAME PC as Tally Prime, with Tally open and the company
 loaded. See the setup walkthrough for how to enable Tally's XML gateway,
@@ -92,6 +95,13 @@ PENDING_PROFORMA_DOC = "pending_proforma_invoices"
 # latest sync, as one document -- see fetch_party_balances. Kept in
 # PERIOD_COLLECTION for the same reason as the Proforma list.
 PARTY_BALANCES_DOC = "sundry_balances"
+
+# Every stock item's closing quantity and value, as of the latest item-wise
+# read, as one document -- see _sync_stock for how carefully that's done.
+STOCK_DOC = "stock_summary"
+STOCK_MIN_HOURS = 3
+STOCK_PAUSE_DAYS = 7
+STOCK_TIMEOUT_SECONDS = 120
 
 # The dashboard's Sync now button and this PC's answer to it -- see
 # run_listener. "request" is the one document the dashboard may write
@@ -1019,6 +1029,99 @@ def _sync_party_balances(dry_run=False, dump_raw_dir=None):
         log.warning("Sundry debtors/creditors not written -- %s", e)
 
 
+def fetch_stock_items(date, dump_raw_dir=None):
+    """Every stock item's closing quantity and value at the end of the given
+    day, from Tally's own valuation. One request, one attempt, a time limit
+    -- this is the computation that once coincided with a Tally crash, so
+    nothing here retries it. Items with no quantity and no value are left
+    out. Value is a debit, which Tally writes as a negative number."""
+    xml_req = _collection_request("StockItems", "StockItem",
+                                  ["NAME", "PARENT", "BASEUNITS", "CLOSINGBALANCE", "CLOSINGVALUE", "CLOSINGRATE"],
+                                  _fy_start(date), date)
+    root = _post_xml(xml_req, dump_raw_dir, "stock_items", timeout=STOCK_TIMEOUT_SECONDS, max_attempts=1)
+    items = []
+    for it in _collection_records(root, "STOCKITEM"):
+        qty_text = _text(it, "CLOSINGBALANCE")
+        m = re.match(r"\s*(-?[\d,]*\.?\d+)", qty_text)
+        qty = float(m.group(1).replace(",", "")) if m else 0.0
+        value = round(-_num(it, "CLOSINGVALUE"), 2)
+        if abs(qty) < 1e-9 and abs(value) < 0.5:
+            continue
+        items.append({"name": (it.get("NAME") or _text(it, "NAME") or "").strip(),
+                      "group": _text(it, "PARENT").strip(),
+                      "qty": qty, "qty_text": qty_text.strip(),
+                      "value": value})
+    items.sort(key=lambda r: -r["value"])
+    return items
+
+
+def _stock_marker(name):
+    return os.path.join(SCRIPT_DIR, name)
+
+
+def _read_marker(name):
+    try:
+        with open(_stock_marker(name)) as f:
+            return datetime.datetime.fromisoformat(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _write_marker(name, when):
+    with open(_stock_marker(name), "w") as f:
+        f.write(when.isoformat())
+
+
+def _sync_stock(date, pl_closing_stock=None, dry_run=False, dump_raw_dir=None):
+    """Reads the item-wise stock and stores it, as carefully as Tally needs:
+      - at most once every STOCK_MIN_HOURS, however often syncs run -- the
+        hourly and Sync now runs mostly skip it;
+      - one attempt with a STOCK_TIMEOUT_SECONDS limit, never retried;
+      - after any failure, not asked again for STOCK_PAUSE_DAYS, and the
+        dashboard says so, so a Tally that struggles with it isn't hit
+        every hour.
+    pl_closing_stock, when given, is the P&L's Closing Stock for the same
+    day; the items' total is checked against it. Never stops the sync."""
+    now = datetime.datetime.now()
+    paused_until = _read_marker("stock_paused_until.txt")
+    if not dry_run and paused_until and paused_until > now:
+        log.info("Item-wise stock paused until %s after an earlier failure.", paused_until.date())
+        return
+    last = _read_marker("stock_last_read.txt")
+    if not dry_run and last and now - last < datetime.timedelta(hours=STOCK_MIN_HOURS):
+        return
+    started = time.time()
+    try:
+        items = fetch_stock_items(date, dump_raw_dir)
+    except TallyError as e:
+        until = now + datetime.timedelta(days=STOCK_PAUSE_DAYS)
+        log.warning("Item-wise stock not read (%s) -- not asking again until %s.", e, until.date())
+        if not dry_run:
+            _write_marker("stock_paused_until.txt", until)
+            try:
+                _firestore_db().collection(PERIOD_COLLECTION).document(STOCK_DOC).set(
+                    {"error": str(e)[:300], "paused_until": until.date().isoformat()}, merge=True)
+            except Exception as ex:
+                log.warning("Stock status not written -- %s", ex)
+        return
+    took = time.time() - started
+    total = round(sum(r["value"] for r in items), 2)
+    matches = None if pl_closing_stock is None else abs(total - pl_closing_stock) < 1
+    log.info("Item-wise stock: %d items, Rs.%s (%.0f s)%s", len(items), total, took,
+             "" if matches is not False else f" -- P&L closing stock is Rs.{pl_closing_stock}")
+    doc = {"as_of": datetime.datetime.now(datetime.timezone.utc).isoformat(), "date": date.isoformat(),
+           "total_value": total, "count": len(items), "items": items, "seconds": round(took, 1),
+           "pl_closing_stock": pl_closing_stock, "matches": matches, "error": None, "paused_until": None}
+    if dry_run:
+        print(json.dumps(doc, indent=2, ensure_ascii=False))
+        return
+    try:
+        _firestore_db().collection(PERIOD_COLLECTION).document(STOCK_DOC).set(doc)
+        _write_marker("stock_last_read.txt", now)
+    except Exception as e:
+        log.warning("Item-wise stock not written -- %s", e)
+
+
 def push_pending_proformas(records, covered_from):
     """Replaces the pending Proforma list with what Tally has now, keeping
     any entry dated before covered_from -- the same limit as the Delivery
@@ -1285,6 +1388,7 @@ def run(date, dry_run=False, dump_raw_dir=None):
         print(json.dumps(proformas, indent=2, ensure_ascii=False))
         sync_period_reports(date, date, dry_run=True, dump_raw_dir=dump_raw_dir)
         _sync_party_balances(dry_run=True, dump_raw_dir=dump_raw_dir)
+        _sync_stock(date, payload["profit_and_loss"].get("closing_stock") or None, dry_run=True, dump_raw_dir=dump_raw_dir)
         log.info("Dry run -- nothing written to Firestore.")
         return
 
@@ -1296,6 +1400,7 @@ def run(date, dry_run=False, dump_raw_dir=None):
               FIRESTORE_COLLECTION, date_iso, len(delivery_challans), removed, listed)
     sync_period_reports(date, date, dump_raw_dir=dump_raw_dir)
     _sync_party_balances(dump_raw_dir=dump_raw_dir)
+    _sync_stock(date, payload["profit_and_loss"].get("closing_stock") or None, dump_raw_dir=dump_raw_dir)
 
 
 def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
@@ -1364,6 +1469,9 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
               len(delivery_challans), removed, listed)
     sync_period_reports(from_date, to_date, dry_run=dry_run, dump_raw_dir=dump_raw_dir)
     _sync_party_balances(dry_run=dry_run, dump_raw_dir=dump_raw_dir)
+    # As of today, like the party balances; the backfill's last day is
+    # yesterday, so there's no P&L for today at hand to check it against.
+    _sync_stock(datetime.date.today(), None, dry_run=dry_run, dump_raw_dir=dump_raw_dir)
 
 
 # ---------------------------------------------------------------------------

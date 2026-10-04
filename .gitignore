@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 tally-sync/*.lock
 tally-sync/*_log.txt*
+tally-sync/stock_*.txt

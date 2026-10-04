@@ -37,17 +37,16 @@
   h1{ font-size:21px; font-weight:700; margin:0; letter-spacing:0.2px; color:var(--black); }
   .clock{ font-family:'JetBrains Mono',Consolas,'Cascadia Mono','Courier New',monospace; font-size:15px; color:var(--text-dim); }
 
-  /* Nine equal tiles, three to a row on a laptop or desktop: Sales,
-     Purchase and P&L; Cash, Bank and Sundry Debtors; the two pending lists
-     and Sundry Creditors -- the third column holds the balances. It was
-     seven, four to a row; Sundry Debtors and Creditors made nine, and three
-     rows of three is the shape that still fits the owner's laptop (about
-     1145 x 536 page pixels at its Windows display scaling) on one screen
-     with every tile folded. The spacing above the tiles is kept tight for
-     the same reason. A tile that's opened takes the full row instead, so its table
+  /* Ten equal tiles, four to a row on a laptop or desktop: Sales,
+     Purchase, P&L and Stock; Cash, Bank, Sundry Debtors and Sundry
+     Creditors; then the two pending lists. Three rows is what still fits
+     the owner's laptop (about 1145 x 536 page pixels at its Windows display
+     scaling) on one screen with every tile folded, so ten tiles go four to
+     a row. The spacing above the tiles is kept tight for the same reason.
+     A tile that's opened takes the full row instead, so its table
      gets the width it needs; the tiles after it move down a row but keep
      their order. */
-  .dash-grid{ display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:12px; }
+  .dash-grid{ display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:10px; }
   .dash-grid .card.open{ grid-column:1 / -1; }
   @media (max-width: 1000px){ .dash-grid{ grid-template-columns:repeat(2, minmax(0, 1fr)); } }
   @media (max-width: 640px){ .dash-grid{ grid-template-columns:1fr; } }
@@ -55,7 +54,7 @@
   .card{
     background:var(--panel); border:1px solid var(--panel-edge); border-radius:14px;
     box-shadow:0 1px 3px rgba(17,17,17,0.06), 0 8px 24px rgba(17,17,17,0.04);
-    padding:11px 16px; display:flex; flex-direction:column;
+    padding:10px 16px; display:flex; flex-direction:column;
     position:relative; overflow:hidden;
   }
   .card .kicker{
@@ -487,6 +486,19 @@
       <div class="review-flag" id="plReviewFlag" style="display:none;"></div>
     </div>
 
+    <div class="card expandable" id="stockCard">
+      <div class="kicker">Stock</div>
+      <div class="stat-count" id="stockTotal">–</div>
+      <div class="stat-sub" id="stockCount">Loading…</div>
+      <div class="tap-hint">Tap for item-wise detail</div>
+      <div class="voucher-detail-panel tall" id="stockDetail">
+        <table class="datatable party-table" id="stockTable">
+          <thead><tr><th>Item</th><th>Group</th><th class="num-col">Quantity</th><th class="num-col">Value</th></tr></thead>
+          <tbody id="stockBody"><tr><td colspan="4" class="empty-note">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="card expandable" id="cashCard">
       <div class="kicker">Cash Vouchers</div>
       <div class="stat-count" id="cashTotal">0</div>
@@ -526,6 +538,19 @@
       </div>
     </div>
 
+    <div class="card expandable" id="creditorsCard">
+      <div class="kicker">Sundry Creditors</div>
+      <div class="stat-count" id="creditorsTotal">–</div>
+      <div class="stat-sub" id="creditorsCount">Loading…</div>
+      <div class="tap-hint">Tap for party-wise detail</div>
+      <div class="voucher-detail-panel tall" id="creditorsDetail">
+        <table class="datatable party-table" id="creditorsTable">
+          <thead><tr><th>Party</th><th>Group</th><th class="num-col">Balance</th></tr></thead>
+          <tbody id="creditorsBody"><tr><td colspan="3" class="empty-note">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="card expandable" id="challanCard">
       <div class="kicker">Pending Delivery Challans</div>
       <div class="stat-count pending" id="challanTotal">–</div>
@@ -553,19 +578,6 @@
         <table class="datatable">
           <thead><tr><th>Date</th><th>Party</th><th>Description</th><th>Voucher No</th><th class="num-col">Amount</th></tr></thead>
           <tbody id="proformaBody"><tr><td colspan="5" class="empty-note">Loading…</td></tr></tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="card expandable" id="creditorsCard">
-      <div class="kicker">Sundry Creditors</div>
-      <div class="stat-count" id="creditorsTotal">–</div>
-      <div class="stat-sub" id="creditorsCount">Loading…</div>
-      <div class="tap-hint">Tap for party-wise detail</div>
-      <div class="voucher-detail-panel tall" id="creditorsDetail">
-        <table class="datatable party-table" id="creditorsTable">
-          <thead><tr><th>Party</th><th>Group</th><th class="num-col">Balance</th></tr></thead>
-          <tbody id="creditorsBody"><tr><td colspan="3" class="empty-note">Loading…</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -1043,6 +1055,59 @@ function attachPartyListener(){
   );
 }
 
+// ---------------------------------------------------------------------
+// Stock
+// ---------------------------------------------------------------------
+// Item-wise closing stock as of the latest read. sync_tally.py reads it
+// sparingly (_sync_stock: at most every few hours, one attempt, paused for
+// a week after a failure -- a stock read once coincided with a Tally
+// crash), so the tile says when it was read and, if the latest attempt
+// failed, that it's paused and until when.
+const STOCK_DOC = 'stock_summary';
+let shownStock = null;
+let stockUnsubscribe = null;
+function detachStockListener(){
+  if (stockUnsubscribe){ stockUnsubscribe(); stockUnsubscribe = null; }
+}
+
+function renderStock(d){
+  shownStock = d;
+  const body = document.getElementById('stockBody');
+  const items = (d && d.items) || [];
+  const fmtQty = (r) => r.qty_text || (r.qty != null ? String(r.qty) : '');
+  if (!d || (!d.as_of && !d.error)){
+    document.getElementById('stockTotal').textContent = '–';
+    document.getElementById('stockCount').textContent = 'Not synced from Tally yet';
+    body.innerHTML = '<tr><td colspan="4" class="empty-note">The list appears after the next sync.</td></tr>';
+    return;
+  }
+  document.getElementById('stockTotal').textContent = d.as_of ? fmtINR(d.total_value) : '–';
+  const notes = [];
+  if (d.as_of) notes.push(items.length + ' item' + (items.length === 1 ? '' : 's') + ' · as on ' + syncWhen(d.as_of));
+  if (d.matches === false) notes.push('⚠ P&L stock ' + fmtINR(d.pl_closing_stock));
+  if (d.error) notes.push('⚠ Tally didn\'t answer — paused till ' + isoToShort(d.paused_until));
+  document.getElementById('stockCount').textContent = notes.join(' · ');
+  document.getElementById('stockCount').title = d.error ? 'Latest stock read failed: ' + d.error : '';
+  body.innerHTML = items.length ? items.map(r => `
+    <tr>
+      <td>${escapeHtml(r.name || '')}</td>
+      <td>${escapeHtml(r.group || '')}</td>
+      <td class="num-col">${escapeHtml(fmtQty(r))}</td>
+      <td class="num-col">${fmtINR(r.value)}</td>
+    </tr>`).join('') : '<tr><td colspan="4" class="empty-note">No stock read yet.</td></tr>';
+}
+
+function attachStockListener(){
+  detachStockListener();
+  stockUnsubscribe = db.collection(PERIOD_COLLECTION).doc(STOCK_DOC).onSnapshot(
+    (doc) => renderStock(doc.exists ? doc.data() : null),
+    (error) => {
+      console.error(error);
+      document.getElementById('stockBody').innerHTML = '<tr><td colspan="4" class="empty-note">Could not load -- check your internet connection.</td></tr>';
+    }
+  );
+}
+
 let shownProformas = [];
 function renderProformaTable(rows){
   shownProformas = rows;
@@ -1234,6 +1299,8 @@ function shareSections(){
       rows: shownChallans.map(r => [r.date || '', r.party || '(no party)', r.description || '', r.voucher_no || '']) },
     { title: 'Pending proforma invoices', head: ['Date', 'Party', 'Description', 'Voucher No', 'Amount'],
       rows: shownProformas.map(r => [r.date || '', r.party || '(no party)', r.description || '', r.voucher_no || '', fmtINR(r.amount)]) },
+    { title: 'Stock', head: ['Item', 'Group', 'Quantity', 'Amount'],
+      rows: ((shownStock || {}).items || []).map(r => [r.name || '', r.group || '', r.qty_text || '', fmtINR(r.value)]) },
     ...['debtors', 'creditors'].map(key => ({ title: 'Sundry ' + key, head: ['Party', 'Group', 'Amount'],
       rows: ((shownParties[key] || {}).parties || []).map(r => [r.name || '', r.group || '', fmtINR(r.amount)]) })),
   ];
@@ -1524,6 +1591,7 @@ wireExpandableCard('cashCard', 'cashDetail');
 wireExpandableCard('bankCard', 'bankDetail');
 wireExpandableCard('challanCard', 'challanDetail');
 wireExpandableCard('debtorsCard', 'debtorsDetail');
+wireExpandableCard('stockCard', 'stockDetail');
 wireExpandableCard('creditorsCard', 'creditorsDetail');
 
 // Today means today's own figures: it goes back to Daily as well. It used
@@ -1833,6 +1901,7 @@ auth.onAuthStateChanged((user) => {
     attachChallanListener();
     attachProformaListener();
     attachPartyListener();
+    attachStockListener();
     attachSyncStatusListener();
   } else if (handlingEmailLink) {
     // Mid sign-in via the emailed link -- leave whatever screen is
@@ -1846,6 +1915,7 @@ auth.onAuthStateChanged((user) => {
     detachChallanListener();
     detachProformaListener();
     detachPartyListener();
+    detachStockListener();
     detachSyncStatusListener();
   }
 });
