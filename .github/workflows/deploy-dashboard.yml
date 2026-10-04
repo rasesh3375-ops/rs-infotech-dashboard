@@ -5,9 +5,9 @@
 #
 # Needs the repository secret FIREBASE_SERVICE_ACCOUNT_RS_INFOTECH_DASHBOARD,
 # created once by running "firebase init hosting:github" on a computer where
-# the Firebase CLI is logged in as the project owner. Only index.html (and a
-# 404.html, if one is added) is published -- firebase.json leaves out
-# tally-sync/, which holds the sync scripts, and every dotfile.
+# the Firebase CLI is logged in as the project owner. The page, its logo and
+# icons, and the PDF library in vendor/ are published -- firebase.json leaves
+# out tally-sync/, which holds the sync scripts, and every dotfile.
 name: Publish dashboard
 
 on:
@@ -16,6 +16,9 @@ on:
     paths:
       - index.html
       - 404.html
+      - '*.png'
+      - '*.ico'
+      - vendor/**
       - firebase.json
       - .github/workflows/deploy-dashboard.yml
   workflow_dispatch:

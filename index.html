@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>R.S.Infotech Dashboard 2025-2026</title>
+<link rel="icon" href="favicon.ico" sizes="16x16">
+<link rel="icon" type="image/png" href="favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-title" content="RS Dashboard">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700;800&display=swap" rel="stylesheet">
@@ -204,6 +208,43 @@
   .sync-state.bad{ color:var(--red); }
   .ctrl-btn:disabled{ opacity:0.5; cursor:default; background:var(--bg); }
   .sync-now + .logout-link{ margin-left:4px; }
+  /* The R mark beside the heading, and the full logo on the sign-in card --
+     both cut from the logo the KM Tracker app already uses. */
+  h1 .brand-mark{ height:24px; width:auto; vertical-align:-4px; margin-right:9px; }
+  /* multiply drops the logo image's off-white background into the white card. */
+  .login-logo{ display:block; width:150px; height:auto; margin:0 auto 18px; mix-blend-mode:multiply; }
+
+  /* Share: WhatsApp, Email, PDF and Print of whatever is on screen. */
+  .share-wrap{ position:relative; }
+  .share-menu{
+    display:none; position:absolute; right:0; top:calc(100% + 6px); z-index:20; min-width:190px;
+    background:var(--panel); border:1px solid var(--panel-edge); border-radius:10px;
+    box-shadow:0 8px 24px rgba(17,17,17,0.14); padding:5px;
+  }
+  .share-menu.open{ display:block; }
+  .share-menu button{
+    display:flex; align-items:center; gap:10px; width:100%; padding:9px 10px; border:0; border-radius:7px;
+    background:none; color:var(--text); font-family:'Inter',sans-serif; font-size:13.5px; font-weight:600; text-align:left; cursor:pointer;
+  }
+  .share-menu button:hover{ background:var(--bg); }
+  .share-menu .ico{ width:20px; text-align:center; font-size:15px; }
+  #printReport{ display:none; }
+  @media print{
+    body > *:not(#printReport){ display:none !important; }
+    #printReport{ display:block; font-family:'Inter',Arial,sans-serif; color:#000; font-size:10.5pt; }
+    @page{ margin:12mm; }
+  }
+  .pr-head{ display:flex; align-items:center; gap:12px; border-bottom:2px solid #14539a; padding-bottom:8px; margin-bottom:10px; }
+  .pr-head img{ height:40px; }
+  .pr-company{ font-size:15pt; font-weight:800; }
+  .pr-title{ font-size:10.5pt; color:#333; }
+  .pr-section{ font-size:11.5pt; font-weight:700; margin:14px 0 4px; break-after:avoid; }
+  .pr-table{ width:100%; border-collapse:collapse; }
+  .pr-table th, .pr-table td{ border:1px solid #bbb; padding:3px 6px; text-align:left; vertical-align:top; }
+  .pr-table th{ background:#eef2f8; font-size:9pt; }
+  .pr-table td.num{ text-align:right; white-space:nowrap; }
+  .pr-table tr{ break-inside:avoid; }
+  .pr-foot{ margin-top:14px; font-size:8.5pt; color:#555; }
   .logout-link{ margin-left:auto; font-size:13px; color:var(--text-dim); cursor:pointer; text-decoration:underline; }
   .logout-link:hover{ color:var(--text); }
 
@@ -234,7 +275,12 @@
     .sync-now{ display:contents; }
     .sync-now .ctrl-btn{ margin-left:auto; }
     .sync-now + .logout-link{ margin-left:2px; font-size:12px; }
-    .sync-state{ order:10; flex-basis:100%; max-width:none; white-space:normal; font-size:11.5px; }
+    /* A basis too wide for the first line, so the status always starts the
+       second one, with Share at its right-hand end. */
+    .sync-state{ order:10; flex:1 1 60%; max-width:none; white-space:normal; font-size:11.5px; }
+    .share-wrap{ order:11; }
+    .share-wrap .ctrl-btn{ padding:4px 10px; font-size:12px; }
+    h1 .brand-mark{ height:19px; vertical-align:-3px; margin-right:7px; }
     .view-label{ margin:0 2px 6px; font-size:12px; }
 
     /* The period buttons as one row that swipes sideways. */
@@ -284,6 +330,7 @@
 
 <div id="loginScreen">
   <div class="login-card">
+    <img class="login-logo" src="logo.png" alt="R. S. Infotech — Complete Technology Solutions Provider">
     <h1>R.S.Infotech Dashboard</h1>
     <div class="login-sub">Sign in to view today's sales, purchase, P&amp;L and cash vouchers.</div>
     <form id="loginForm">
@@ -317,7 +364,7 @@
 <div class="wrap">
   <div class="brand-bar"></div>
   <header>
-    <h1>R.S.Infotech <span id="dateLabel"></span></h1>
+    <h1><img class="brand-mark" src="logo-mark.png" alt="">R.S.Infotech <span id="dateLabel"></span></h1>
     <div class="clock" id="clock">--:--:--</div>
   </header>
 
@@ -328,6 +375,15 @@
     <button class="ctrl-btn" id="btnPickDate">View date</button>
     <span class="sync-now">
       <span class="sync-state" id="syncState"></span>
+      <span class="share-wrap">
+        <button class="ctrl-btn" id="btnShare" aria-haspopup="true">Share ▾</button>
+        <div class="share-menu" id="shareMenu" role="menu">
+          <button data-share="whatsapp" role="menuitem"><span class="ico">💬</span>WhatsApp</button>
+          <button data-share="email" role="menuitem"><span class="ico">✉️</span>Email</button>
+          <button data-share="pdf" role="menuitem"><span class="ico">📄</span>PDF</button>
+          <button data-share="print" role="menuitem"><span class="ico">🖨️</span>Print</button>
+        </div>
+      </span>
       <button class="ctrl-btn" id="btnSyncNow" title="Sync today's figures from Tally now">Sync now</button>
     </span>
     <span class="logout-link" id="logoutLink">Log out</span>
@@ -447,6 +503,8 @@
   <div class="footer-note" id="updatedNote">Waiting for first update…</div>
 </div>
 </div>
+
+<div id="printReport"></div>
 
 <script>
 // Paste the firebaseConfig values from Firebase Console -> Project settings
@@ -596,7 +654,9 @@ function renderSalesLike(prefix, title, x, booksAmount, emptyWhat){
 // carrying its date for the Date column. Adding days up is right for these
 // -- they are flows. It is not right for profit, which is why P&L never
 // comes through here for a period (see loadPlPeriod).
+let shownTiles = null;   // what the tiles were last drawn from, for Share
 function renderTiles(data, emptyWhat){
+  shownTiles = data;
   const empty = { total: 0, count: 0, vouchers: [] };
   const sales = data.sales || empty;
   const purchase = data.purchase || empty;
@@ -797,7 +857,9 @@ function detachChallanListener(){
   if (challanUnsubscribe){ challanUnsubscribe(); challanUnsubscribe = null; }
 }
 
+let shownChallans = [];
 function renderChallanTable(rows){
+  shownChallans = rows;
   const body = document.getElementById('challanBody');
   document.getElementById('challanTotal').textContent = rows.length;
   document.getElementById('challanCount').textContent =
@@ -844,7 +906,9 @@ function detachProformaListener(){
   if (proformaUnsubscribe){ proformaUnsubscribe(); proformaUnsubscribe = null; }
 }
 
+let shownProformas = [];
 function renderProformaTable(rows){
+  shownProformas = rows;
   const body = document.getElementById('proformaBody');
   const value = rows.reduce((t, r) => t + (r.amount || 0), 0);
   document.getElementById('proformaTotal').textContent = rows.length;
@@ -984,6 +1048,176 @@ document.getElementById('btnSyncNow').addEventListener('click', () => {
     renderSyncState();
     if (syncStatus !== undefined) document.getElementById('syncState').textContent = 'Could not send the sync request — check your internet connection.';
   });
+});
+
+// ---------------------------------------------------------------------
+// Share: WhatsApp, Email, PDF, Print
+// ---------------------------------------------------------------------
+// Everything shares what is on screen at that moment -- the period on the
+// bar, the figures on the tiles, the lists behind them -- so a shared
+// report can't disagree with the dashboard it came from. The summary is
+// read off the tiles themselves; the lists come from the same data the
+// tiles were drawn from (shownTiles, shownChallans, shownProformas).
+const SITE_URL = 'https://rs-infotech-dashboard.web.app';
+
+function shareSummaryRows(){
+  return [...document.querySelectorAll('.dash-grid > .card')].map(card => {
+    const flag = card.querySelector('.review-flag');
+    const note = (flag && flag.style.display !== 'none' && flag.textContent.trim()) ||
+                 ((card.querySelector('.stat-sub') || card.querySelector('.pl-range-label') || {}).textContent || '').trim();
+    return [card.querySelector('.kicker').textContent.trim(), card.querySelector('.stat-count').textContent.trim(), note];
+  });
+}
+
+function shareTitle(){
+  return 'R. S. Infotech — ' + PERIOD_TITLES[currentPeriod] + ' report';
+}
+
+function shareText(){
+  const lines = ['*' + shareTitle() + '*', document.getElementById('periodRange').textContent, ''];
+  for (const [label, value, note] of shareSummaryRows()) lines.push(label + ': ' + value + (note ? '  (' + note + ')' : ''));
+  lines.push('', SITE_URL);
+  return lines.join('\n');
+}
+
+// The report as sections of rows, shared by the PDF and the printout.
+function shareSections(){
+  const t = shownTiles || {};
+  const multi = currentPeriod !== 'daily';
+  const vouchers = (x, withDir) => ((x || {}).vouchers || []).map(v => [
+    ...(multi ? [v.date ? isoToShort(v.date) : ''] : []), v.party || '(no party)', v.description || '', v.type || '',
+    ...(withDir ? [v.direction === 'cash_in' || v.direction === 'bank_in' ? 'In' : 'Out'] : []), fmtINR(v.amount)]);
+  const head = (withDir) => [...(multi ? ['Date'] : []), 'Party', 'Description', 'Type', ...(withDir ? ['In/Out'] : []), 'Amount'];
+  return [
+    { title: 'Sales', head: head(false), rows: vouchers(t.sales, false) },
+    { title: 'Purchase', head: head(false), rows: vouchers(t.purchase, false) },
+    { title: 'Cash vouchers', head: head(true), rows: vouchers(t.cash_vouchers, true) },
+    { title: 'Bank transactions', head: head(true), rows: vouchers(t.bank_vouchers, true) },
+    { title: 'Pending delivery challans', head: ['Date', 'Party', 'Items', 'Voucher No'],
+      rows: shownChallans.map(r => [r.date || '', r.party || '(no party)', r.description || '', r.voucher_no || '']) },
+    { title: 'Pending proforma invoices', head: ['Date', 'Party', 'Description', 'Voucher No', 'Amount'],
+      rows: shownProformas.map(r => [r.date || '', r.party || '(no party)', r.description || '', r.voucher_no || '', fmtINR(r.amount)]) },
+  ];
+}
+
+function shareFileName(){
+  const [from, to] = periodBoundsIso(currentPeriod, currentAnchorDateIso);
+  return 'RS-Infotech-' + PERIOD_TITLES[currentPeriod] + '-' + (currentPeriod === 'daily' ? currentAnchorDateIso : from + '_to_' + to) + '.pdf';
+}
+
+function loadScriptOnce(src){
+  return new Promise((resolve, reject) => {
+    if (document.querySelector('script[src="' + src + '"]')) return resolve();
+    const el = document.createElement('script');
+    el.src = src; el.onload = resolve; el.onerror = () => reject(new Error('Could not load ' + src));
+    document.head.appendChild(el);
+  });
+}
+
+async function imageAsDataUrl(src){
+  const blob = await (await fetch(src)).blob();
+  return new Promise((resolve) => { const r = new FileReader(); r.onload = () => resolve(r.result); r.readAsDataURL(blob); });
+}
+
+// The PDF is built here in the browser by jsPDF (kept in vendor/, loaded
+// only when PDF is pressed). Its built-in fonts have no ₹ sign, so amounts
+// read "Rs." in the PDF only.
+async function buildPdf(){
+  await loadScriptOnce('vendor/jspdf.umd.min.js');
+  await loadScriptOnce('vendor/jspdf.plugin.autotable.min.js');
+  const doc = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4' });
+  const plain = (x) => String(x ?? '').replace(/₹/g, 'Rs. ').replace(/[^\x20-\x7E -ÿ–—·‘’“”…]/g, '');
+  const pageW = doc.internal.pageSize.getWidth();
+  try { doc.addImage(await imageAsDataUrl('logo-mark.png'), 'PNG', 14, 10, 11, 14, undefined, 'FAST'); } catch (e) { console.error(e); }
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.text('R. S. Infotech', 29, 16);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+  doc.text(plain(PERIOD_TITLES[currentPeriod] + ' report · ' + document.getElementById('periodRange').textContent), 29, 22);
+  doc.setFontSize(8); doc.setTextColor(110);
+  doc.text(plain('Generated ' + new Date().toLocaleString()), pageW - 14, 16, { align: 'right' });
+  doc.setTextColor(0);
+  doc.autoTable({ startY: 30, head: [['', 'Figure', 'Details']], body: shareSummaryRows().map(r => r.map(plain)),
+    styles: { fontSize: 9, cellPadding: 1.8 }, headStyles: { fillColor: [20, 83, 154] },
+    columnStyles: { 0: { fontStyle: 'bold', cellWidth: 58 }, 1: { halign: 'right', cellWidth: 32 } } });
+  for (const sec of shareSections()){
+    let y = doc.lastAutoTable.finalY + 8;
+    if (y > doc.internal.pageSize.getHeight() - 30){ doc.addPage(); y = 16; }
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.text(sec.title + ' (' + sec.rows.length + ')', 14, y);
+    doc.autoTable({ startY: y + 2, head: [sec.head.map(h => h === 'Amount' ? { content: h, styles: { halign: 'right' } } : h)], body: sec.rows.length ? sec.rows.map(r => r.map(plain)) : [[{ content: 'None', colSpan: sec.head.length }]],
+      styles: { fontSize: 8, cellPadding: 1.5 }, headStyles: { fillColor: [20, 83, 154] },
+      columnStyles: Object.fromEntries(sec.head.map((h, i) => [i, h === 'Amount' ? { halign: 'right', cellWidth: 26 } : {}])) });
+  }
+  const pages = doc.getNumberOfPages();
+  for (let i = 1; i <= pages; i++){
+    doc.setPage(i); doc.setFontSize(8); doc.setTextColor(110);
+    doc.text('Page ' + i + ' of ' + pages + ' · ' + SITE_URL, pageW / 2, doc.internal.pageSize.getHeight() - 8, { align: 'center' });
+  }
+  return doc;
+}
+
+function buildPrintReport(){
+  const cell = (x, num) => '<td' + (num ? ' class="num"' : '') + '>' + escapeHtml(x) + '</td>';
+  let html = '<div class="pr-head"><img src="logo-mark.png" alt=""><div><div class="pr-company">R. S. Infotech</div>' +
+    '<div class="pr-title">' + escapeHtml(PERIOD_TITLES[currentPeriod] + ' report · ' + document.getElementById('periodRange').textContent) + '</div></div></div>';
+  html += '<table class="pr-table">' + shareSummaryRows().map(([l, v, n]) => '<tr><th>' + escapeHtml(l) + '</th>' + cell(v, true) + cell(n) + '</tr>').join('') + '</table>';
+  for (const sec of shareSections()){
+    html += '<div class="pr-section">' + escapeHtml(sec.title + ' (' + sec.rows.length + ')') + '</div><table class="pr-table"><tr>' +
+      sec.head.map(h => '<th>' + escapeHtml(h) + '</th>').join('') + '</tr>' +
+      (sec.rows.length ? sec.rows.map(r => '<tr>' + r.map((x, i) => cell(x, sec.head[i] === 'Amount')).join('') + '</tr>').join('')
+                       : '<tr><td colspan="' + sec.head.length + '">None</td></tr>') + '</table>';
+  }
+  html += '<div class="pr-foot">Generated ' + escapeHtml(new Date().toLocaleString()) + ' · ' + SITE_URL + '</div>';
+  document.getElementById('printReport').innerHTML = html;
+}
+
+const isPhone = () => window.matchMedia('(max-width: 640px)').matches;
+
+async function doShare(kind){
+  if (!shownTiles){ alert('Wait for the figures to load, then try again.'); return; }
+  if (kind === 'whatsapp'){
+    window.open('https://wa.me/?text=' + encodeURIComponent(shareText()), '_blank');
+  } else if (kind === 'email'){
+    window.location.href = 'mailto:?subject=' + encodeURIComponent(shareTitle() + ' — ' + document.getElementById('periodRange').textContent) +
+      '&body=' + encodeURIComponent(shareText().replace(/\*/g, ''));
+  } else if (kind === 'print'){
+    buildPrintReport();
+    window.print();
+  } else if (kind === 'pdf'){
+    const btn = document.getElementById('btnShare');
+    btn.textContent = 'Making PDF…'; btn.disabled = true;
+    try {
+      const doc = await buildPdf();
+      const name = shareFileName();
+      const file = new File([doc.output('blob')], name, { type: 'application/pdf' });
+      // On a phone the PDF goes to the share sheet, where WhatsApp, Mail and
+      // Save to Files can each take it as an attachment; on a computer it
+      // downloads.
+      if (isPhone() && navigator.canShare && navigator.canShare({ files: [file] })){
+        try { await navigator.share({ files: [file], title: name }); }
+        catch (e) { if (e.name !== 'AbortError') doc.save(name); }
+      } else {
+        doc.save(name);
+      }
+    } catch (e){
+      console.error(e);
+      alert('Could not make the PDF — check your internet connection and try again.');
+    } finally {
+      btn.textContent = 'Share ▾'; btn.disabled = false;
+    }
+  }
+}
+
+document.getElementById('btnShare').addEventListener('click', (e) => {
+  e.stopPropagation();
+  document.getElementById('shareMenu').classList.toggle('open');
+});
+document.getElementById('shareMenu').addEventListener('click', (e) => {
+  const item = e.target.closest('button[data-share]');
+  if (!item) return;
+  document.getElementById('shareMenu').classList.remove('open');
+  doShare(item.dataset.share);
+});
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.share-wrap')) document.getElementById('shareMenu').classList.remove('open');
 });
 
 function setActiveButton(id){
