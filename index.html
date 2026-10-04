@@ -228,6 +228,31 @@
   }
   .share-menu button:hover{ background:var(--bg); }
   .share-menu .ico{ width:20px; text-align:center; font-size:15px; }
+  /* Face ID lock: a cover over the dashboard until the device's own
+     Face ID / Touch ID / Windows Hello check passes. */
+  #lockScreen{
+    display:none; position:fixed; inset:0; z-index:100; background:var(--bg);
+    align-items:center; justify-content:center; padding:24px;
+  }
+  #lockScreen.show{ display:flex; }
+  body.locked #appContent{ visibility:hidden; }
+  .lock-card{ text-align:center; max-width:340px; width:100%; }
+  .lock-card .login-btn{ margin-top:18px; }
+  .lock-card .login-error{ text-align:left; }
+  .lock-alt{ display:block; margin-top:16px; font-size:13px; color:var(--text-dim); text-decoration:underline; cursor:pointer; }
+  .lock-offer{
+    display:none; align-items:center; gap:10px; flex-wrap:wrap; margin:0 0 10px; padding:9px 12px;
+    background:rgba(20,83,154,0.08); border:1px solid rgba(20,83,154,0.25); border-radius:10px; font-size:13px; color:var(--text);
+  }
+  .lock-offer.show{ display:flex; }
+  .lock-offer .grow{ flex:1 1 220px; }
+  .lock-offer .lock-offer-btns{ display:flex; gap:6px; margin-left:auto; }
+  /* Not .ctrl-btn.active: setActiveButton clears "active" from every
+     .ctrl-btn when the view changes, which turned this one grey. */
+  .lock-offer .lock-on{ background:var(--blue); color:#fff; border-color:var(--blue); }
+  .lock-offer .lock-on:hover{ background:#0f3f75; }
+  .lock-setting{ display:none; margin-left:6px; text-decoration:underline; cursor:pointer; }
+  .lock-setting.show{ display:inline; }
   #printReport{ display:none; }
   @media print{
     body > *:not(#printReport){ display:none !important; }
@@ -388,6 +413,13 @@
     </span>
     <span class="logout-link" id="logoutLink">Log out</span>
   </div>
+  <div class="lock-offer" id="lockOffer">
+    <span class="grow">🔒 Open this dashboard with <b class="lock-name">Face ID</b> on this device?</span>
+    <span class="lock-offer-btns">
+      <button class="ctrl-btn lock-on" id="lockOfferOn">Turn on</button>
+      <button class="ctrl-btn" id="lockOfferNo">Not now</button>
+    </span>
+  </div>
   <div class="view-label" id="viewLabel"><span class="live-dot"></span> Showing: Today (live)</div>
 
   <div class="period-bar">
@@ -500,8 +532,18 @@
   </div>
 
   <div class="status-banner" id="statusBanner"></div>
-  <div class="footer-note" id="updatedNote">Waiting for first update…</div>
+  <div class="footer-note"><span id="updatedNote">Waiting for first update…</span><span class="lock-setting" id="lockSetting"></span></div>
 </div>
+</div>
+
+<div id="lockScreen" role="dialog" aria-label="Locked">
+  <div class="login-card lock-card">
+    <img class="login-logo" src="logo.png" alt="R. S. Infotech">
+    <h1 style="font-size:20px;margin:0;">R.S.Infotech Dashboard</h1>
+    <button type="button" class="login-btn" id="unlockBtn">Unlock with <span class="lock-name">Face ID</span></button>
+    <div class="login-error" id="unlockError"></div>
+    <span class="lock-alt" id="unlockWithPassword">Sign in with password instead</span>
+  </div>
 </div>
 
 <div id="printReport"></div>
@@ -1465,6 +1507,7 @@ document.getElementById('loginForm').addEventListener('submit', (e) => {
   // password alone signs you straight in; onAuthStateChanged below picks
   // it up and shows the app. Re-enable by restoring the
   // auth.signOut().then(() => sendLinkAndShowCheckEmail(email)) chain here.
+  freshPasswordSignIn = true;   // just proved who they are: no Face ID on top this time
   auth.signInWithEmailAndPassword(email, password)
     .catch((error) => {
       errEl.textContent = 'Sign-in failed: ' + (error.message || 'check your email and password.');
@@ -1539,11 +1582,153 @@ function completeEmailLinkSignInIfPresent(){
   return true;
 }
 
+// ---------------------------------------------------------------------
+// Face ID lock
+// ---------------------------------------------------------------------
+// Firebase keeps the owner signed in on their iPhone, so anyone holding the
+// unlocked phone could open the figures. This puts the device's own
+// biometric check -- Face ID on the iPhone, Touch ID or Windows Hello
+// elsewhere -- in front of the dashboard, through WebAuthn: turning it on
+// creates a passkey for this site on this device, and unlocking asks the
+// device to use it, which it only does after Face ID passes.
+//
+// It is a lock on this device, not a second sign-in: the password and the
+// Firestore rules still decide who can read anything, and nothing about
+// the passkey is sent anywhere. Turned on per device and remembered in
+// that device's storage; "Sign in with password instead" always gets past
+// it, by signing out.
+const LOCK_CRED_KEY = 'rsDashLockCredential';
+const LOCK_DECLINED_KEY = 'rsDashLockDeclined';
+const RELOCK_AFTER_MS = 60 * 1000;
+let freshPasswordSignIn = false;
+let lockedNow = false;
+let hiddenSince = null;
+
+function lsGet(k){ try { return window.localStorage.getItem(k); } catch (e) { return null; } }
+function lsSet(k, v){ try { v === null ? window.localStorage.removeItem(k) : window.localStorage.setItem(k, v); } catch (e) {} }
+const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+const unb64 = (s) => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const lockName = () => /iPhone|iPad|iPod/.test(navigator.userAgent) ? 'Face ID'
+  : /Macintosh/.test(navigator.userAgent) ? 'Touch ID' : /Windows/.test(navigator.userAgent) ? 'Windows Hello' : 'your device lock';
+
+async function deviceLockAvailable(){
+  try {
+    return !!(window.PublicKeyCredential && PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable &&
+              await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable());
+  } catch (e) { return false; }
+}
+
+function renderLockSetting(){
+  const el = document.getElementById('lockSetting');
+  const on = !!lsGet(LOCK_CRED_KEY);
+  el.textContent = on ? ' · ' + lockName() + ' lock on — turn off' : '';
+  el.classList.toggle('show', on);
+}
+
+function setLocked(locked){
+  lockedNow = locked;
+  document.body.classList.toggle('locked', locked);
+  document.getElementById('lockScreen').classList.toggle('show', locked);
+  if (locked){
+    document.getElementById('unlockError').classList.remove('show');
+    document.getElementById('shareMenu').classList.remove('open');
+  }
+}
+
+async function enableDeviceLock(){
+  const email = (auth.currentUser && auth.currentUser.email) || 'owner';
+  const cred = await navigator.credentials.create({ publicKey: {
+    challenge: crypto.getRandomValues(new Uint8Array(32)),
+    rp: { name: 'R.S.Infotech Dashboard' },
+    user: { id: crypto.getRandomValues(new Uint8Array(16)), name: email, displayName: email },
+    pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+    authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred' },
+    timeout: 60000,
+  } });
+  lsSet(LOCK_CRED_KEY, b64(cred.rawId));
+  renderLockSetting();
+}
+
+async function tryUnlock(){
+  const stored = lsGet(LOCK_CRED_KEY);
+  if (!stored){ setLocked(false); return; }
+  const errEl = document.getElementById('unlockError');
+  errEl.classList.remove('show');
+  try {
+    await navigator.credentials.get({ publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      allowCredentials: [{ type: 'public-key', id: unb64(stored) }],
+      userVerification: 'required',
+      timeout: 60000,
+    } });
+    setLocked(false);
+  } catch (e){
+    console.error(e);
+    // A cancelled or refused prompt leaves the lock up; Safari also refuses
+    // a prompt nobody tapped for, which is why the button is there.
+    if (e && e.name !== 'NotAllowedError' && e.name !== 'AbortError'){
+      errEl.textContent = lockName() + ' could not be used (' + (e.message || e.name) + '). Sign in with your password instead.';
+      errEl.classList.add('show');
+    }
+  }
+}
+
+async function startDeviceLock(user){
+  document.querySelectorAll('.lock-name').forEach(el => { el.textContent = lockName(); });
+  renderLockSetting();
+  if (lsGet(LOCK_CRED_KEY)){
+    if (freshPasswordSignIn){ freshPasswordSignIn = false; return; }
+    setLocked(true);
+    tryUnlock();
+    return;
+  }
+  freshPasswordSignIn = false;
+  if (!lsGet(LOCK_DECLINED_KEY) && await deviceLockAvailable()){
+    document.getElementById('lockOffer').classList.add('show');
+  }
+}
+
+document.getElementById('lockOfferOn').addEventListener('click', async () => {
+  try {
+    await enableDeviceLock();
+    document.getElementById('lockOffer').classList.remove('show');
+  } catch (e){
+    console.error(e);
+    if (e && e.name !== 'NotAllowedError' && e.name !== 'AbortError') alert(lockName() + ' could not be turned on: ' + (e.message || e.name));
+  }
+});
+document.getElementById('lockOfferNo').addEventListener('click', () => {
+  lsSet(LOCK_DECLINED_KEY, '1');
+  document.getElementById('lockOffer').classList.remove('show');
+});
+document.getElementById('lockSetting').addEventListener('click', () => {
+  if (!confirm('Turn off the ' + lockName() + ' lock on this device?')) return;
+  lsSet(LOCK_CRED_KEY, null);
+  lsSet(LOCK_DECLINED_KEY, '1');
+  renderLockSetting();
+});
+document.getElementById('unlockBtn').addEventListener('click', tryUnlock);
+document.getElementById('unlockWithPassword').addEventListener('click', () => {
+  setLocked(false);
+  auth.signOut();
+});
+// Locks again after a minute away -- switching to WhatsApp and back
+// straight away doesn't ask again, leaving the phone on the table does.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden){ hiddenSince = Date.now(); return; }
+  if (hiddenSince && Date.now() - hiddenSince >= RELOCK_AFTER_MS && lsGet(LOCK_CRED_KEY) && auth.currentUser && !lockedNow){
+    setLocked(true);
+    tryUnlock();
+  }
+  hiddenSince = null;
+});
+
 const handlingEmailLink = completeEmailLinkSignInIfPresent();
 
 auth.onAuthStateChanged((user) => {
   if (user){
     showScreen('app');
+    startDeviceLock(user);
     currentAnchorDateIso = todayISO();
     loadView();
     attachChallanListener();
