@@ -10,9 +10,10 @@ exit /b
 # R.S. Infotech dashboard -- one-file setup for the Tally sync on an office PC
 #
 # Double-click this file on the PC where Tally is used every day, logged in
-# as the person who uses Tally there. Put service-account.json (from the
-# tally-sync folder on the laptop) in the same folder as this file first --
-# a pen drive is fine. Running it again later is safe: it updates the
+# as the person who uses Tally there. Put the Firebase key in the same
+# folder first: service-account.json from the laptop, or a new key
+# downloaded from the Firebase console (Project settings > Service
+# accounts > Generate new private key), which is used as it's named. Running it again later is safe: it updates the
 # scripts to the latest version and re-checks everything.
 #
 # What it does:
@@ -56,7 +57,16 @@ Write-Host "Windows user: $env:USERDOMAIN\$env:USERNAME"
 Step 'Checking the Firebase key (service-account.json)'
 $keySource = Join-Path $SourceDir 'service-account.json'
 if (-not (Test-Path $keySource)) {
-    Fail "service-account.json was not found next to this file ($SourceDir). Copy it from the laptop's C:\rs-infotech-dashboard-main\tally-sync folder into the same folder as this setup file."
+    # A key downloaded fresh from the Firebase console keeps its own name
+    # (rs-infotech-dashboard-firebase-adminsdk-....json), and renaming it
+    # goes wrong when Windows hides extensions (service-account.json.json),
+    # so the newest such file next to this one is used as it is.
+    $found = Get-ChildItem -Path $SourceDir -Filter '*firebase-adminsdk*.json' -ErrorAction SilentlyContinue |
+             Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($found) { $keySource = $found.FullName }
+}
+if (-not (Test-Path $keySource)) {
+    Fail "No Firebase key was found next to this file ($SourceDir). In the Firebase console open Project settings > Service accounts > Generate new private key, and save the file in the same folder as this setup file."
 }
 try { $key = Get-Content $keySource -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { Fail 'service-account.json is not a valid key file (it could not be read as JSON).' }
 if ($key.type -ne 'service_account' -or $key.project_id -ne 'rs-infotech-dashboard') {
