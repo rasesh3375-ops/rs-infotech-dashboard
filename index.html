@@ -206,6 +206,78 @@
   .sync-now + .logout-link{ margin-left:4px; }
   .logout-link{ margin-left:auto; font-size:13px; color:var(--text-dim); cursor:pointer; text-decoration:underline; }
   .logout-link:hover{ color:var(--text); }
+
+  /* ---------------------------------------------------------------------
+     Phone layout (iPhone and similar). Everything here sits inside this one
+     query, so the laptop and desktop layout above is untouched by it.
+     The tiles become one list, like a banking app: the name on the left,
+     the figure on the right, every figure lined up in one column, all of
+     it on one screen. On the iPhone the desktop layout ran to seven
+     full-width tiles over 1,250px, with the period buttons on three rows
+     and five-column tables that didn't fit across.
+     --------------------------------------------------------------------- */
+  @media (max-width: 640px){
+    .wrap{ padding:8px 12px 16px; }
+    .brand-bar{ height:4px; margin-bottom:8px; }
+    header{ margin-bottom:6px; }
+    h1{ font-size:17px; }
+    .clock{ display:none; }
+
+    /* Today, the date, Sync now and Log out on one line; picking a date
+       loads it straight away (see the pickDate change handler), so View
+       date isn't needed. The sync status gets its own line underneath. */
+    .controls-bar{ gap:6px; padding:6px 8px; margin-bottom:6px; }
+    .controls-bar > span[style]{ display:none; }
+    #btnPickDate{ display:none; }
+    .ctrl-date-input{ padding:6px; flex:0 1 auto; min-width:0; }
+    .ctrl-btn{ padding:6px 10px; }
+    .sync-now{ display:contents; }
+    .sync-now .ctrl-btn{ margin-left:auto; }
+    .sync-now + .logout-link{ margin-left:2px; font-size:12px; }
+    .sync-state{ order:10; flex-basis:100%; max-width:none; white-space:normal; font-size:11.5px; }
+    .view-label{ margin:0 2px 6px; font-size:12px; }
+
+    /* The period buttons as one row that swipes sideways. */
+    .period-bar{ padding:6px 8px; gap:6px; margin-bottom:8px; }
+    .period-btns{ flex-wrap:nowrap; overflow-x:auto; width:100%; scrollbar-width:none; -webkit-overflow-scrolling:touch; }
+    .period-btns::-webkit-scrollbar{ display:none; }
+    .pl-period-btn, .period-arrow{ flex:0 0 auto; }
+    .period-now{ width:100%; justify-content:space-between; }
+
+    /* The tiles as rows of one list. */
+    .dash-grid{ display:block; background:var(--panel); border:1px solid var(--panel-edge); border-radius:14px; overflow:hidden; }
+    .card{
+      display:grid; grid-template-columns:minmax(0, 1fr) auto; column-gap:10px; align-items:center;
+      border:0; border-radius:0; box-shadow:none; border-bottom:1px solid rgba(17,17,17,0.08); padding:11px 14px;
+    }
+    .card:last-child{ border-bottom:0; }
+    .card .kicker{ grid-column:1; grid-row:1; margin:0; font-size:12px; letter-spacing:0.2px; color:var(--text); }
+    .card.expandable .kicker::after{ content:' ›'; color:var(--text-dim); }
+    .stat-count{ grid-column:2; grid-row:1 / span 2; font-size:20px; text-align:right; }
+    .stat-sub, .pl-range-label{ grid-column:1; grid-row:2; font-size:11.5px; margin-top:2px; }
+    .card.expandable .tap-hint{ display:none; }
+    .voucher-detail-panel, .review-flag{ grid-column:1 / -1; }
+    .voucher-detail-panel, .voucher-detail-panel.tall{ max-height:none; }
+
+    /* Lists as stacked rows: party and amount on the first line, the
+       description under them, then type / date / voucher number small. */
+    table.datatable thead{ display:none; }
+    table.datatable, table.datatable tbody{ display:block; }
+    table.datatable tr{
+      display:flex; flex-wrap:wrap; align-items:baseline; column-gap:8px;
+      padding:8px 2px; border-bottom:1px solid rgba(17,17,17,0.08);
+    }
+    table.datatable tr:hover td{ background:none; }
+    table.datatable td{ display:block; padding:0; border:0; }
+    table.datatable td.date-col{ display:none; }
+    .dash-grid.multi-day table.datatable td.date-col{ display:block; order:4; font-size:11px; color:var(--text-dim); }
+    table.datatable td:nth-child(2){ flex:1 1 0; min-width:0; font-weight:600; }
+    table.datatable td.num-col{ order:2; font-weight:700; font-family:'JetBrains Mono',monospace; }
+    table.datatable td:nth-child(3){ order:3; flex-basis:100%; font-size:12px; color:var(--text-dim); }
+    table.datatable td:nth-child(4), table.datatable td:nth-child(5):not(.num-col){ order:4; font-size:11px; color:var(--text-dim); }
+    #challanTable td:nth-child(1), #proformaCard td:nth-child(1){ order:4; font-size:11px; color:var(--text-dim); }
+    table.datatable td.empty-note{ flex-basis:100%; }
+  }
 </style>
 </head>
 <body>
@@ -1083,6 +1155,15 @@ document.getElementById('btnToday').addEventListener('click', () => {
 // returns to this month, not to today's single day.
 document.getElementById('backToToday').addEventListener('click', () => {
   currentAnchorDateIso = todayISO();
+  loadView();
+});
+
+// On a phone View date is hidden to keep the bar on one line, so picking a
+// date shows it straight away. The laptop keeps its View date button.
+document.getElementById('pickDate').addEventListener('change', () => {
+  const d = document.getElementById('pickDate').value;
+  if (!d || !window.matchMedia('(max-width: 640px)').matches) return;
+  currentAnchorDateIso = d;
   loadView();
 });
 
