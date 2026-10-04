@@ -53,7 +53,8 @@ $marker = Join-Path $PSScriptRoot 'last_full_resync.txt'
 # without it for up to a week. 2: Proforma Invoices kept apart from Sales,
 # and Tally's before-GST Sales and Purchase figures (October 2026).
 # 3: opening and closing cash in hand for the daily cash email.
-$dataFormat = 'data-format 3'
+# 4: the same for every bank account, for the daily bank email.
+$dataFormat = 'data-format 4'
 $fullResync = -not (Test-Path $marker) -or ((Get-Date) - (Get-Item $marker).LastWriteTime).TotalDays -ge 7 -or
     ((Get-Content $marker -Raw) -notmatch [regex]::Escape($dataFormat))
 if ($fullResync) {

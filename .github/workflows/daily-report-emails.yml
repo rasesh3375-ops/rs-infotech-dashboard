@@ -1,11 +1,13 @@
-# Emails yesterday's cash transactions every morning, from the figures the
-# Tally sync stored in Firestore -- see .github/scripts/daily_cash_email.py.
-# Runs on GitHub's servers, so it doesn't need any office PC to be on.
+# Emails yesterday's Daily Cash Transactions, Daily Bank Transactions,
+# Daily Purchase Entries and Daily Sales Entries every morning, one email
+# each, from the figures the Tally sync stored in Firestore -- see
+# .github/scripts/daily_report_emails.py. Runs on GitHub's servers, so it
+# doesn't need any office PC to be on.
 #
 # Needs four repository secrets (Settings > Secrets and variables > Actions):
 # FIREBASE_SERVICE_ACCOUNT, GMAIL_USER, GMAIL_APP_PASSWORD and MAIL_TO.
-# "Run workflow" on the Actions tab sends one straight away, for any date.
-name: Daily cash email
+# "Run workflow" on the Actions tab sends them straight away, for any date.
+name: Daily report emails
 
 on:
   schedule:
@@ -18,6 +20,11 @@ on:
         description: 'Day to send (YYYY-MM-DD). Leave empty for yesterday.'
         required: false
         default: ''
+      report:
+        description: 'Which emails'
+        type: choice
+        options: [all, cash, bank, purchase, sales]
+        default: all
 
 jobs:
   email:
@@ -28,11 +35,12 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install --quiet firebase-admin
-      # The date goes in through an environment variable, not pasted into
-      # the command, so nothing typed into it can run as a shell command.
-      - run: python .github/scripts/daily_cash_email.py "$SEND_DATE"
+      # The inputs go in through environment variables, not pasted into the
+      # command, so nothing typed into them can run as a shell command.
+      - run: python .github/scripts/daily_report_emails.py "$SEND_DATE" "--report=${SEND_REPORT:-all}"
         env:
           SEND_DATE: ${{ github.event.inputs.date }}
+          SEND_REPORT: ${{ github.event.inputs.report }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}

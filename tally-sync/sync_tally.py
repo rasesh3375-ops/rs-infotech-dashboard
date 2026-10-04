@@ -614,6 +614,9 @@ def _ledger_touching_vouchers_from(vouchers, ledger_names, in_label, out_label):
             "voucher_no": _text(v, "VOUCHERNUMBER"),
             "party": _text(v, "PARTYLEDGERNAME"),
             "type": _text(v, "VOUCHERTYPENAME"),
+            # Which cash or bank ledger -- with several bank accounts, the
+            # daily bank email says which one the money went through.
+            "ledger": (matched_entry.get("NAME") or _text(matched_entry, "LEDGERNAME") or "").strip(),
             "direction": in_label if is_debit else out_label,
             "amount": round(abs(_num(matched_entry, "AMOUNT")), 2),
             "description": _voucher_description(v),
@@ -621,67 +624,74 @@ def _ledger_touching_vouchers_from(vouchers, ledger_names, in_label, out_label):
     return {"count": len(result), "vouchers": result}
 
 
-def fetch_cash_closing_balances(date, cash_ledgers, dump_raw_dir=None):
-    """Tally's own closing balance of each cash-in-hand ledger at the end of
-    the given day, in rupees, cash in hand as a positive figure. Tally
-    writes a debit balance -- which cash in hand is -- as a negative
-    number, hence the sign flip.
+def fetch_ledger_closing_balances(date, dump_raw_dir=None):
+    """Tally's own closing balance of every ledger at the end of the given
+    day, in rupees, debit balances (cash in hand, money in a bank account)
+    as positive figures -- Tally writes a debit as a negative number, hence
+    the sign flip, so an overdraft comes out negative. One request covers
+    every cash and bank ledger at once.
 
     Asked of Tally rather than added up here because Tally's figure is the
-    one on its Cash Book, opening balance and all. Whether this export
-    really honours the date is checked on every day it's used, in
-    _cash_balance_for, against the day's own cash entries."""
-    xml_req = _collection_request("CashBalances", "Ledger", ["NAME", "PARENT", "CLOSINGBALANCE"],
-                                  _fy_start(date), date)
-    root = _post_xml(xml_req, dump_raw_dir, f"cash_balances_{date.isoformat()}")
+    one on its Cash and Bank Books, opening balance and all. Whether this
+    export really honours the date is checked on every day it's used, in
+    _balance_for, against the day's own entries."""
+    xml_req = _collection_request("LedgerBalances", "Ledger", ["NAME", "CLOSINGBALANCE"], _fy_start(date), date)
+    root = _post_xml(xml_req, dump_raw_dir, f"ledger_balances_{date.isoformat()}")
     balances = {}
     for led in _collection_records(root, "LEDGER"):
         name = (led.get("NAME") or _text(led, "NAME") or "").strip()
-        if name in cash_ledgers:
+        if name:
             balances[name] = -_num(led, "CLOSINGBALANCE")
     return balances
 
 
-def _cash_movement(vouchers, cash_ledgers):
-    """The day's net change in cash in hand from its own vouchers: every
-    entry on a cash ledger, debits (money in) positive. A transfer between
-    two cash ledgers nets to nothing, as it should."""
+def _ledger_movement(vouchers, ledger_names):
+    """The day's net change across ledger_names from its own vouchers: every
+    entry on one of them, debits (money in) positive. A transfer between
+    two of them -- cash to petty cash, one bank to another -- nets to
+    nothing, as it should."""
     total = 0.0
     for v in vouchers:
         for entry in v.findall(".//ALLLEDGERENTRIES.LIST"):
             name = (entry.get("NAME") or _text(entry, "LEDGERNAME") or "").strip()
-            if name in cash_ledgers:
+            if name in ledger_names:
                 total -= _num(entry, "AMOUNT")
     return total
 
 
-def _cash_balance_for(date, vouchers, cash_ledgers, cache, dump_raw_dir=None):
-    """Opening and closing cash in hand for one day, for the daily cash
-    email. Opening is the closing at the end of the day before, as on
-    Tally's Cash Book. cache maps a date to the balances already fetched,
-    so a backfill asks Tally once per day, not twice.
+def _balance_for(date, vouchers, ledger_names, cache, dump_raw_dir=None, what="cash"):
+    """Opening and closing balance across ledger_names for one day -- cash
+    in hand, or money in the bank -- for the daily emails, in total and per
+    ledger. Opening is the closing at the end of the day before, as on
+    Tally's Cash and Bank Books. cache maps a date to every ledger's
+    balance already fetched, so a backfill asks Tally once per day, and
+    cash and bank share the one request.
 
-    "matches" is the safety check: opening + the day's cash entries must
-    equal closing to the rupee. If Tally's export ever ignored the date --
-    its voucher export does exactly that -- every day with cash movement
-    would fail this check, and the email says the balances couldn't be
-    confirmed rather than printing a wrong one. A failure here never stops
-    the rest of the day's sync."""
+    "matches" is the safety check: opening + the day's entries must equal
+    closing to the rupee. If Tally's export ever ignored the date -- its
+    voucher export does exactly that -- every day with any movement would
+    fail it, and the email says the balances couldn't be confirmed rather
+    than printing a wrong one. A failure here never stops the rest of the
+    day's sync."""
     try:
         for d in (date - datetime.timedelta(days=1), date):
             if d not in cache:
-                cache[d] = fetch_cash_closing_balances(d, cash_ledgers, dump_raw_dir)
+                cache[d] = fetch_ledger_closing_balances(d, dump_raw_dir)
     except TallyError as e:
-        log.warning("%s: cash balances not read -- %s", date, e)
+        log.warning("%s: %s balances not read -- %s", date, what, e)
         return {"error": str(e)}
-    opening, closing = sum(cache[date - datetime.timedelta(days=1)].values()), sum(cache[date].values())
-    movement = _cash_movement(vouchers, cash_ledgers)
+    before, after = cache[date - datetime.timedelta(days=1)], cache[date]
+    ledgers = {name: {"opening": round(before.get(name, 0.0), 2), "closing": round(after.get(name, 0.0), 2)}
+               for name in sorted(ledger_names)}
+    opening = sum(before.get(name, 0.0) for name in ledger_names)
+    closing = sum(after.get(name, 0.0) for name in ledger_names)
+    movement = _ledger_movement(vouchers, ledger_names)
     matches = abs(opening + movement - closing) < 1
     if not matches:
-        log.warning("%s: cash balances don't tie -- opening %.2f + movement %.2f != closing %.2f",
-                    date, opening, movement, closing)
+        log.warning("%s: %s balances don't tie -- opening %.2f + movement %.2f != closing %.2f",
+                    date, what, opening, movement, closing)
     return {"opening": round(opening, 2), "closing": round(closing, 2),
-            "movement": round(movement, 2), "matches": matches}
+            "movement": round(movement, 2), "matches": matches, "ledgers": ledgers}
 
 
 def _cash_vouchers_from(vouchers, cash_ledgers):
@@ -1093,6 +1103,7 @@ def sync_period_reports(from_date, to_date, dry_run=False, dump_raw_dir=None):
 
 def _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, bank_ledgers, dump_raw_dir=None,
                    cash_balance_cache=None):
+    balance_cache = {} if cash_balance_cache is None else cash_balance_cache
     payload = {
         "date": date.strftime("%Y-%m-%d"),
         "synced_at": datetime.datetime.now().isoformat(),
@@ -1101,8 +1112,8 @@ def _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, bank_ledg
         "purchase": _filter_by_class(vouchers, voucher_type_parents, "purchase"),
         "profit_and_loss": fetch_profit_and_loss(date, dump_raw_dir),
         "cash_vouchers": _cash_vouchers_from(vouchers, cash_ledgers),
-        "cash_balance": _cash_balance_for(date, vouchers, cash_ledgers,
-                                          {} if cash_balance_cache is None else cash_balance_cache, dump_raw_dir),
+        "cash_balance": _balance_for(date, vouchers, cash_ledgers, balance_cache, dump_raw_dir, "cash"),
+        "bank_balance": _balance_for(date, vouchers, bank_ledgers, balance_cache, dump_raw_dir, "bank"),
         "bank_vouchers": _bank_vouchers_from(vouchers, bank_ledgers),
     }
     log.info(
