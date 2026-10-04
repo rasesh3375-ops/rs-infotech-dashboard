@@ -8,6 +8,11 @@ figures the Tally sync has already stored in Firestore (daily_reports):
   Daily Purchase Entries    purchases before and with GST, every entry
   Daily Sales Entries       sales before and with GST, every entry
 
+and every Saturday, two more:
+
+  Pending Delivery Challans   every Delivery Note still in Tally, oldest first
+  Pending Proforma Invoices   every Proforma Invoice still in Tally, oldest first
+
 Each email's subject is its report name and the date, nothing else, so the
 four sort and search cleanly in the inbox.
 
@@ -24,10 +29,11 @@ repository is public:
   MAIL_TO                   where they go; several addresses separated by commas
 
 Usage:
-  python daily_cash_email.py                      # all four, for yesterday (India time)
-  python daily_cash_email.py 2026-10-03           # all four, for a given day
-  python daily_cash_email.py --report=cash,bank   # only some of them
-  python daily_cash_email.py --dry-run            # print them, send nothing
+  python daily_report_emails.py                        # the four daily ones, for yesterday (India time)
+  python daily_report_emails.py 2026-10-03             # the four daily ones, for a given day
+  python daily_report_emails.py --report=weekly        # the two pending lists, as they stand now
+  python daily_report_emails.py --report=cash,bank     # only some of them
+  python daily_report_emails.py --dry-run              # print them, send nothing
 """
 
 import datetime
@@ -42,6 +48,12 @@ from zoneinfo import ZoneInfo
 DASHBOARD_URL = "https://rs-infotech-dashboard.web.app"
 LOGO_URL = DASHBOARD_URL + "/logo-mark.png"
 COLLECTION = "daily_reports"
+CHALLAN_COLLECTION = "delivery_challans"
+PERIOD_COLLECTION = "period_reports"
+PENDING_PROFORMA_DOC = "pending_proforma_invoices"
+# A pending item at least this old is counted out separately, so the ones
+# that have been waiting a month stand out from this week's.
+OVERDUE_DAYS = 30
 IST = ZoneInfo("Asia/Kolkata")
 
 GREEN, RED, DIM, LINE = "#167a51", "#d31a14", "#6e6358", "#e5e1dc"
@@ -208,6 +220,52 @@ def _entries_report(report, key, books_key, title):
     return lines, body
 
 
+def _pending_report(rows, today, noun, with_amount):
+    """Delivery Challans or Proforma Invoices still pending: (text lines,
+    html body). Oldest first, each with how many days it has waited."""
+    def age(r):
+        try:
+            return (today - datetime.date.fromisoformat(r.get("date") or "")).days
+        except ValueError:
+            return None
+    rows = sorted(rows, key=lambda r: r.get("date") or "")
+    overdue = [r for r in rows if (age(r) or 0) >= OVERDUE_DAYS]
+    value = sum(r.get("amount") or 0 for r in rows)
+    oldest = rows[0].get("date") if rows else ""
+
+    lines = [f"Pending: {len(rows)}"] + ([f"Value with GST: {inr(value)}"] if with_amount else []) + [
+        f"Waiting {OVERDUE_DAYS}+ days: {len(overdue)}"] + ([f"Oldest: {oldest}"] if oldest else []) + [""]
+    for r in rows:
+        a = age(r)
+        lines.append(f"{r.get('date') or '':<10}  {str(a) + 'd' if a is not None else '':>5}  "
+                     + (f"{inr(r.get('amount')):>12}  " if with_amount else "")
+                     + f"{r.get('party') or '(no party)'} -- {r.get('description') or ''} ({r.get('voucher_no') or ''})")
+    if not rows:
+        lines.append(f"No pending {noun}s.")
+
+    tiles = [("PENDING", str(len(rows)), RED if rows else "#161311")]
+    if with_amount:
+        tiles.append(("VALUE WITH GST", inr(value), "#161311"))
+    tiles.append((f"{OVERDUE_DAYS}+ DAYS OLD", str(len(overdue)), RED if overdue else "#161311"))
+    body = _tiles(tiles) + _note(f"Oldest first. Days = days since its date in Tally." if rows else "")
+
+    def age_cell(r):
+        a = age(r)
+        if a is None:
+            return ""
+        return f'<span style="font-weight:700;color:{RED if a >= OVERDUE_DAYS else DIM}">{a}d</span>'
+    head = ["Date", "Days", "Party", "Voucher No"] + (["Amount"] if with_amount else [])
+    table_rows = [[e(r.get("date") or ""), age_cell(r), _party_cell(r), e(r.get("voucher_no") or "")]
+                  + ([e(inr(r.get("amount")))] if with_amount else []) for r in rows]
+    if not rows:
+        table_rows = [[f"No pending {noun}s.", "", "", ""] + ([""] if with_amount else [])]
+    body += _table(head, table_rows, right=(1, 4) if with_amount else (1,))
+    return lines, body
+
+
+# Every report: its email subject's name, whether it's a daily report of
+# one day (reads that day's daily_reports document) or a list as it stands
+# now, and how to build it.
 REPORTS = {
     "cash": ("Daily Cash Transactions",
              lambda r: _money_report(r, "cash_vouchers", "cash_balance", "cash_in", "voucher", show_ledger=False)),
@@ -215,16 +273,32 @@ REPORTS = {
              lambda r: _money_report(r, "bank_vouchers", "bank_balance", "bank_in", "transaction", show_ledger=True)),
     "purchase": ("Daily Purchase Entries", lambda r: _entries_report(r, "purchase", "purchase_accounts", "Purchase")),
     "sales": ("Daily Sales Entries", lambda r: _entries_report(r, "sales", "sales_accounts", "Sales")),
+    "challans": ("Pending Delivery Challans",
+                 lambda rows, today: _pending_report(rows, today, "delivery challan", with_amount=False)),
+    "proformas": ("Pending Proforma Invoices",
+                  lambda rows, today: _pending_report(rows, today, "proforma invoice", with_amount=True)),
 }
+DAILY = ["cash", "bank", "purchase", "sales"]
+WEEKLY = ["challans", "proformas"]
+GROUPS = {"daily": DAILY, "weekly": WEEKLY, "all": DAILY}
 
 
 def build_email(kind, day, report):
-    """(subject, plain text, html) for one report and day. report is the
-    day's daily_reports document, or None when that day was never synced.
-    The subject is the report's name and the date, and only that."""
+    """(subject, plain text, html) for one report and day. For a daily
+    report, report is the day's daily_reports document, or None when that
+    day was never synced; for a pending list it's the list (None when it
+    was never synced) and day is the day it's sent. The subject is the
+    report's name and the date, and only that."""
     name, build = REPORTS[kind]
     label = day.strftime("%A, %d %b %Y")
     subject = f"{name} - {day:%d %b %Y}"
+    if kind in WEEKLY:
+        if report is None:
+            msg = "This list hasn't been synced from Tally yet."
+            return subject, f"R. S. Infotech -- {name} as on {label}\n\n{msg}\n\n{DASHBOARD_URL}", _wrap(name, label, f"<p>{e(msg)}</p>")
+        lines, body = build(report, day)
+        text = "\n".join([f"R. S. Infotech -- {name} as on {label}", ""] + lines + ["", DASHBOARD_URL])
+        return subject, text, _wrap(name, "as on " + label, body)
     if report is None:
         msg = ("This day hasn't been synced from Tally yet, so there are no figures to send. "
                "The Tally PC may have been off or Tally closed at the 10 AM sync.")
@@ -237,12 +311,26 @@ def build_email(kind, day, report):
 # --- reading and sending ----------------------------------------------------
 
 def read_report(day):
+    snap = _db().collection(COLLECTION).document(day.isoformat()).get()
+    return snap.to_dict() if snap.exists else None
+
+
+def _db():
     import firebase_admin
     from firebase_admin import credentials, firestore
     if not firebase_admin._apps:
         firebase_admin.initialize_app(credentials.Certificate(json.loads(os.environ["FIREBASE_SERVICE_ACCOUNT"])))
-    snap = firestore.client().collection(COLLECTION).document(day.isoformat()).get()
-    return snap.to_dict() if snap.exists else None
+    return firestore.client()
+
+
+def read_pending(kind):
+    """The pending list as the sync last left it, or None if it never ran.
+    Delivery Challans are one document each; the Proforma list is one
+    document holding them all (sync_tally.py, push_pending_proformas)."""
+    if kind == "challans":
+        return [d.to_dict() for d in _db().collection(CHALLAN_COLLECTION).stream()]
+    snap = _db().collection(PERIOD_COLLECTION).document(PENDING_PROFORMA_DOC).get()
+    return (snap.to_dict() or {}).get("proformas") or [] if snap.exists else None
 
 
 def send(subject, text, html_body):
@@ -271,23 +359,31 @@ def main():
     if missing and not dry_run:
         print(f"::warning::Daily emails not sent -- repository secret(s) not set yet: {', '.join(missing)}")
         return 0
-    kinds = list(REPORTS)
+    kinds = list(DAILY)
     for a in sys.argv[1:]:
         if a.startswith("--report="):
-            wanted = [k.strip() for k in a.split("=", 1)[1].split(",") if k.strip() and k.strip() != "all"]
-            unknown = [k for k in wanted if k not in REPORTS]
-            if unknown:
-                print(f"Unknown report(s): {', '.join(unknown)} -- choose from {', '.join(REPORTS)}")
-                return 2
-            kinds = wanted or kinds
+            kinds = []
+            for k in (k.strip() for k in a.split("=", 1)[1].split(",")):
+                if k in GROUPS:
+                    kinds += GROUPS[k]
+                elif k in REPORTS:
+                    kinds.append(k)
+                elif k:
+                    print(f"Unknown report: {k} -- choose from {', '.join(list(GROUPS) + list(REPORTS))}")
+                    return 2
+            kinds = list(dict.fromkeys(kinds)) or list(DAILY)
     dates = [a for a in sys.argv[1:] if not a.startswith("--") and a]
-    day = (datetime.date.fromisoformat(dates[0]) if dates
-           else datetime.datetime.now(IST).date() - datetime.timedelta(days=1))
-    report = read_report(day)
+    today = datetime.datetime.now(IST).date()
+    day = datetime.date.fromisoformat(dates[0]) if dates else today - datetime.timedelta(days=1)
+    report = read_report(day) if any(k in DAILY for k in kinds) else None
     failed = []
     # One email per report; one failing to send doesn't stop the others.
     for kind in kinds:
-        subject, text, html_body = build_email(kind, day, report)
+        if kind in WEEKLY:
+            # A pending list is as it stands now, dated the day it's sent.
+            subject, text, html_body = build_email(kind, today, read_pending(kind))
+        else:
+            subject, text, html_body = build_email(kind, day, report)
         if dry_run:
             print(f"=== {subject}\n{text}\n")
             continue

@@ -1,6 +1,7 @@
 # Emails yesterday's Daily Cash Transactions, Daily Bank Transactions,
-# Daily Purchase Entries and Daily Sales Entries every morning, one email
-# each, from the figures the Tally sync stored in Firestore -- see
+# Daily Purchase Entries and Daily Sales Entries every morning, and the
+# Pending Delivery Challans and Pending Proforma Invoices every Saturday,
+# one email each, from the figures the Tally sync stored in Firestore -- see
 # .github/scripts/daily_report_emails.py. Runs on GitHub's servers, so it
 # doesn't need any office PC to be on.
 #
@@ -14,6 +15,8 @@ on:
     # 05:30 UTC is 11:00 AM in India, after the 10 AM Tally sync. GitHub
     # can start scheduled runs a little late at busy times.
     - cron: '30 5 * * *'
+    # 05:35 UTC on Saturdays: the two pending lists, just after the daily ones.
+    - cron: '35 5 * * 6'
   workflow_dispatch:
     inputs:
       date:
@@ -21,10 +24,10 @@ on:
         required: false
         default: ''
       report:
-        description: 'Which emails'
+        description: 'Which emails (daily = the four daily ones, weekly = the two pending lists)'
         type: choice
-        options: [all, cash, bank, purchase, sales]
-        default: all
+        options: [daily, weekly, cash, bank, purchase, sales, challans, proformas]
+        default: daily
 
 jobs:
   email:
@@ -37,10 +40,10 @@ jobs:
       - run: pip install --quiet firebase-admin
       # The inputs go in through environment variables, not pasted into the
       # command, so nothing typed into them can run as a shell command.
-      - run: python .github/scripts/daily_report_emails.py "$SEND_DATE" "--report=${SEND_REPORT:-all}"
+      - run: python .github/scripts/daily_report_emails.py "$SEND_DATE" "--report=${SEND_REPORT:-daily}"
         env:
           SEND_DATE: ${{ github.event.inputs.date }}
-          SEND_REPORT: ${{ github.event.inputs.report }}
+          SEND_REPORT: ${{ github.event.schedule == '35 5 * * 6' && 'weekly' || github.event.inputs.report }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
