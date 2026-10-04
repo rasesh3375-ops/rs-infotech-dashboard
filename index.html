@@ -37,17 +37,17 @@
   h1{ font-size:21px; font-weight:700; margin:0; letter-spacing:0.2px; color:var(--black); }
   .clock{ font-family:'JetBrains Mono',Consolas,'Cascadia Mono','Courier New',monospace; font-size:15px; color:var(--text-dim); }
 
-  /* Seven equal tiles, four to a row on a laptop or desktop, so the whole
-     dashboard still fits one screen in two rows with every tile folded --
-     the Proforma tile made it seven, and three to a row would have needed a
-     third. Four stay down to 1000px: the owner's laptop, at its Windows
-     display scaling, is about 1145 x 536 in page pixels, and three to a row
-     there pushed the last tile below the fold. The spacing above the tiles
-     is kept tight for the same reason. The two pending lists, which don't
-     follow the period bar, sit together at the end. A tile that's opened takes the full row instead, so its table
+  /* Nine equal tiles, three to a row on a laptop or desktop: Sales,
+     Purchase and P&L; Cash, Bank and Sundry Debtors; the two pending lists
+     and Sundry Creditors -- the third column holds the balances. It was
+     seven, four to a row; Sundry Debtors and Creditors made nine, and three
+     rows of three is the shape that still fits the owner's laptop (about
+     1145 x 536 page pixels at its Windows display scaling) on one screen
+     with every tile folded. The spacing above the tiles is kept tight for
+     the same reason. A tile that's opened takes the full row instead, so its table
      gets the width it needs; the tiles after it move down a row but keep
      their order. */
-  .dash-grid{ display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:14px; }
+  .dash-grid{ display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:12px; }
   .dash-grid .card.open{ grid-column:1 / -1; }
   @media (max-width: 1000px){ .dash-grid{ grid-template-columns:repeat(2, minmax(0, 1fr)); } }
   @media (max-width: 640px){ .dash-grid{ grid-template-columns:1fr; } }
@@ -55,7 +55,7 @@
   .card{
     background:var(--panel); border:1px solid var(--panel-edge); border-radius:14px;
     box-shadow:0 1px 3px rgba(17,17,17,0.06), 0 8px 24px rgba(17,17,17,0.04);
-    padding:13px 16px; display:flex; flex-direction:column;
+    padding:11px 16px; display:flex; flex-direction:column;
     position:relative; overflow:hidden;
   }
   .card .kicker{
@@ -72,10 +72,14 @@
   .stat-count.pending{ color:var(--red); }
   .stat-sub{ font-size:12.5px; color:var(--text-dim); margin-top:6px; }
 
+  /* A tile that opens shows ▾ after its name (▴ while open). It used to
+     say "Tap for … detail" on a line of its own; with nine tiles in three
+     rows that line was what pushed the last row off the owner's laptop
+     screen. */
   .card.expandable{ cursor:pointer; }
-  .card.expandable .tap-hint{ font-size:11px; color:var(--text-dim); margin-top:6px; }
-  .card.expandable .tap-hint::after{ content:'▾'; margin-left:5px; display:inline-block; transition:transform 0.15s ease; }
-  .card.expandable.open .tap-hint::after{ transform:rotate(180deg); }
+  .card.expandable .tap-hint{ display:none; }
+  .card.expandable .kicker::after{ content:' ▾'; color:var(--text-dim); }
+  .card.expandable.open .kicker::after{ content:' ▴'; }
   .voucher-detail-panel{
     display:none; margin-top:14px; padding-top:12px; border-top:1px solid var(--panel-edge);
     max-height:280px; overflow-y:auto; width:100%; cursor:default;
@@ -315,12 +319,17 @@
     .period-now{ width:100%; justify-content:space-between; }
 
     /* The tiles as rows of one list. */
-    .dash-grid{ display:block; background:var(--panel); border:1px solid var(--panel-edge); border-radius:14px; overflow:hidden; }
+    .dash-grid{ display:flex; flex-direction:column; gap:0; background:var(--panel); border:1px solid var(--panel-edge); border-radius:14px; overflow:hidden; }
+    /* In one list, Sundry Debtors and Creditors read best together, so the
+       two pending lists move to the end. */
+    #challanCard, #proformaCard{ order:1; }
     .card{
       display:grid; grid-template-columns:minmax(0, 1fr) auto; column-gap:10px; align-items:center;
-      border:0; border-radius:0; box-shadow:none; border-bottom:1px solid rgba(17,17,17,0.08); padding:11px 14px;
+      border:0; border-radius:0; box-shadow:none; border-top:1px solid rgba(17,17,17,0.08); padding:11px 14px;
     }
-    .card:last-child{ border-bottom:0; }
+    /* Dividers above each row, not below: with the pending lists moved to
+       the end, the last row on screen isn't the last in the page. */
+    #salesCard{ border-top:0; }
     .card .kicker{ grid-column:1; grid-row:1; margin:0; font-size:12px; letter-spacing:0.2px; color:var(--text); }
     .card.expandable .kicker::after{ content:' ›'; color:var(--text-dim); }
     .stat-count{ grid-column:2; grid-row:1 / span 2; font-size:20px; text-align:right; }
@@ -346,6 +355,12 @@
     table.datatable td:nth-child(3){ order:3; flex-basis:100%; font-size:12px; color:var(--text-dim); }
     table.datatable td:nth-child(4), table.datatable td:nth-child(5):not(.num-col){ order:4; font-size:11px; color:var(--text-dim); }
     #challanTable td:nth-child(1), #proformaCard td:nth-child(1){ order:4; font-size:11px; color:var(--text-dim); }
+    /* Party / Group / Balance: the party first and bold, the group under it. */
+    table.party-table td:nth-child(1){ flex:1 1 0; min-width:0; font-weight:600; }
+    table.party-table td:nth-child(2){ order:3; flex-basis:100%; flex-grow:0; font-weight:400; font-size:12px; color:var(--text-dim); }
+    /* The balance is this table's third column, which the rule for the
+       other tables would push onto a line of its own. */
+    table.party-table td.num-col{ order:2; flex-basis:auto; font-size:inherit; color:inherit; }
     table.datatable td.empty-note{ flex-basis:100%; }
   }
 </style>
@@ -498,6 +513,19 @@
       </div>
     </div>
 
+    <div class="card expandable" id="debtorsCard">
+      <div class="kicker">Sundry Debtors</div>
+      <div class="stat-count" id="debtorsTotal">–</div>
+      <div class="stat-sub" id="debtorsCount">Loading…</div>
+      <div class="tap-hint">Tap for party-wise detail</div>
+      <div class="voucher-detail-panel tall" id="debtorsDetail">
+        <table class="datatable party-table" id="debtorsTable">
+          <thead><tr><th>Party</th><th>Group</th><th class="num-col">Balance</th></tr></thead>
+          <tbody id="debtorsBody"><tr><td colspan="3" class="empty-note">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="card expandable" id="challanCard">
       <div class="kicker">Pending Delivery Challans</div>
       <div class="stat-count pending" id="challanTotal">–</div>
@@ -525,6 +553,19 @@
         <table class="datatable">
           <thead><tr><th>Date</th><th>Party</th><th>Description</th><th>Voucher No</th><th class="num-col">Amount</th></tr></thead>
           <tbody id="proformaBody"><tr><td colspan="5" class="empty-note">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card expandable" id="creditorsCard">
+      <div class="kicker">Sundry Creditors</div>
+      <div class="stat-count" id="creditorsTotal">–</div>
+      <div class="stat-sub" id="creditorsCount">Loading…</div>
+      <div class="tap-hint">Tap for party-wise detail</div>
+      <div class="voucher-detail-panel tall" id="creditorsDetail">
+        <table class="datatable party-table" id="creditorsTable">
+          <thead><tr><th>Party</th><th>Group</th><th class="num-col">Balance</th></tr></thead>
+          <tbody id="creditorsBody"><tr><td colspan="3" class="empty-note">Loading…</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -947,6 +988,61 @@ function detachProformaListener(){
   if (proformaUnsubscribe){ proformaUnsubscribe(); proformaUnsubscribe = null; }
 }
 
+// ---------------------------------------------------------------------
+// Sundry Debtors and Sundry Creditors
+// ---------------------------------------------------------------------
+// Every party's balance as of the latest sync -- what customers owe, and
+// what's owed to suppliers -- not the period on the bar: a balance is as
+// at a moment, like the pending lists. sync_tally.py (fetch_party_balances)
+// reads them from Tally into one document, and checks the parties add up
+// to Tally's own total for each group; if they don't, the tile says so.
+const PARTY_BALANCES_DOC = 'sundry_balances';
+let shownParties = { debtors: null, creditors: null };
+let partyUnsubscribe = null;
+function detachPartyListener(){
+  if (partyUnsubscribe){ partyUnsubscribe(); partyUnsubscribe = null; }
+}
+
+function renderPartyTile(key, side, asOf){
+  shownParties[key] = side;
+  const body = document.getElementById(key + 'Body');
+  if (!side){
+    document.getElementById(key + 'Total').textContent = '–';
+    document.getElementById(key + 'Count').textContent = 'Not synced from Tally yet';
+    body.innerHTML = '<tr><td colspan="3" class="empty-note">The list appears after the next sync.</td></tr>';
+    return;
+  }
+  const parties = side.parties || [];
+  document.getElementById(key + 'Total').textContent = fmtINR(side.total);
+  document.getElementById(key + 'Count').textContent = parties.length + ' part' + (parties.length === 1 ? 'y' : 'ies') +
+    (asOf ? ' · as on ' + syncWhen(asOf) : '') +
+    (side.matches === false ? ' · ⚠ Tally total ' + fmtINR(side.tally_total) : '');
+  document.getElementById(key + 'Count').title = side.matches === false
+    ? "The parties don't add up to Tally's own total for the group (" + fmtINR(side.tally_total) + ') -- check in Tally.' : '';
+  body.innerHTML = parties.length ? parties.map(r => `
+    <tr>
+      <td>${escapeHtml(r.name || '')}</td>
+      <td>${escapeHtml(r.group || '')}</td>
+      <td class="num-col">${fmtINR(r.amount)}</td>
+    </tr>`).join('') : '<tr><td colspan="3" class="empty-note">Nothing outstanding.</td></tr>';
+}
+
+function attachPartyListener(){
+  detachPartyListener();
+  partyUnsubscribe = db.collection(PERIOD_COLLECTION).doc(PARTY_BALANCES_DOC).onSnapshot(
+    (doc) => {
+      const d = doc.exists ? doc.data() : {};
+      renderPartyTile('debtors', d.debtors || null, d.as_of);
+      renderPartyTile('creditors', d.creditors || null, d.as_of);
+    },
+    (error) => {
+      console.error(error);
+      for (const key of ['debtors', 'creditors'])
+        document.getElementById(key + 'Body').innerHTML = '<tr><td colspan="3" class="empty-note">Could not load -- check your internet connection.</td></tr>';
+    }
+  );
+}
+
 let shownProformas = [];
 function renderProformaTable(rows){
   shownProformas = rows;
@@ -1138,6 +1234,8 @@ function shareSections(){
       rows: shownChallans.map(r => [r.date || '', r.party || '(no party)', r.description || '', r.voucher_no || '']) },
     { title: 'Pending proforma invoices', head: ['Date', 'Party', 'Description', 'Voucher No', 'Amount'],
       rows: shownProformas.map(r => [r.date || '', r.party || '(no party)', r.description || '', r.voucher_no || '', fmtINR(r.amount)]) },
+    ...['debtors', 'creditors'].map(key => ({ title: 'Sundry ' + key, head: ['Party', 'Group', 'Amount'],
+      rows: ((shownParties[key] || {}).parties || []).map(r => [r.name || '', r.group || '', fmtINR(r.amount)]) })),
   ];
 }
 
@@ -1425,6 +1523,8 @@ wireExpandableCard('purchaseCard', 'purchaseDetail');
 wireExpandableCard('cashCard', 'cashDetail');
 wireExpandableCard('bankCard', 'bankDetail');
 wireExpandableCard('challanCard', 'challanDetail');
+wireExpandableCard('debtorsCard', 'debtorsDetail');
+wireExpandableCard('creditorsCard', 'creditorsDetail');
 
 // Today means today's own figures: it goes back to Daily as well. It used
 // to keep whatever period was selected, so after Monthly it stayed on the
@@ -1732,6 +1832,7 @@ auth.onAuthStateChanged((user) => {
     loadView();
     attachChallanListener();
     attachProformaListener();
+    attachPartyListener();
     attachSyncStatusListener();
   } else if (handlingEmailLink) {
     // Mid sign-in via the emailed link -- leave whatever screen is
@@ -1744,6 +1845,7 @@ auth.onAuthStateChanged((user) => {
     detachLiveListener();
     detachChallanListener();
     detachProformaListener();
+    detachPartyListener();
     detachSyncStatusListener();
   }
 });

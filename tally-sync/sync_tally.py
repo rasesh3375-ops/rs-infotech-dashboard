@@ -88,6 +88,11 @@ PERIOD_NAMES = ("weekly", "monthly", "quarterly", "half_yearly", "yearly")
 # rules edited by hand in the Firebase console first.
 PENDING_PROFORMA_DOC = "pending_proforma_invoices"
 
+# Every party's balance under Sundry Debtors and Sundry Creditors, as of the
+# latest sync, as one document -- see fetch_party_balances. Kept in
+# PERIOD_COLLECTION for the same reason as the Proforma list.
+PARTY_BALANCES_DOC = "sundry_balances"
+
 # The dashboard's Sync now button and this PC's answer to it -- see
 # run_listener. "request" is the one document the dashboard may write
 # (the Firestore rules allow nothing else); "status" is written only here.
@@ -924,6 +929,96 @@ def push_to_firestore(date_iso, payload):
     db.collection(FIRESTORE_COLLECTION).document(date_iso).set(payload)
 
 
+def _groups_under(group_parents, root):
+    """Every group (lowercase) whose chain of parents reaches root, root
+    itself included -- so a party filed under a sub-group of Sundry Debtors
+    (say "Debtors - Ahmedabad") still counts as a debtor."""
+    found = {root}
+    for group in group_parents:
+        seen, g = set(), group
+        while g and g not in seen:
+            if g == root:
+                found.add(group)
+                break
+            seen.add(g)
+            g = group_parents.get(g, "")
+    return found
+
+
+def fetch_party_balances(date, dump_raw_dir=None):
+    """Each party's balance under Sundry Debtors and Sundry Creditors at the
+    end of the given day, for the dashboard's two tiles: what customers owe
+    and what's owed to suppliers.
+
+    Debtors are reported as receivable (a debit balance is positive) and
+    creditors as payable (a credit balance is positive), so both totals
+    read the way they're spoken of; a party with the opposite balance -- a
+    customer's advance, a supplier's debit note -- comes out negative and
+    reduces the total, as it does in Tally. Parties with nothing owing are
+    left out.
+
+    Checked against Tally: the parties' total must equal Tally's own
+    closing balance for the group, or the tile says it doesn't tie."""
+    groups_root = _post_xml(_collection_request("GroupList", "Group", ["NAME", "PARENT", "CLOSINGBALANCE"],
+                                                _fy_start(date), date), dump_raw_dir, "groups")
+    group_parents, group_closing = {}, {}
+    for grp in _collection_records(groups_root, "GROUP"):
+        name = (grp.get("NAME") or _text(grp, "NAME") or "").strip().lower()
+        if name:
+            group_parents[name] = _text(grp, "PARENT").strip().lower()
+            group_closing[name] = _num(grp, "CLOSINGBALANCE")
+    ledgers_root = _post_xml(_collection_request("PartyLedgers", "Ledger", ["NAME", "PARENT", "CLOSINGBALANCE"],
+                                                 _fy_start(date), date), dump_raw_dir, "party_ledgers")
+    result = {}
+    # sign turns Tally's figure (debit negative) into the way each side is read
+    for key, root, sign in (("debtors", "sundry debtors", -1), ("creditors", "sundry creditors", 1)):
+        groups = _groups_under(group_parents, root)
+        parties = []
+        for led in _collection_records(ledgers_root, "LEDGER"):
+            parent = _text(led, "PARENT").strip()
+            if parent.lower() not in groups:
+                continue
+            amount = round(sign * _num(led, "CLOSINGBALANCE"), 2)
+            if abs(amount) >= 0.5:
+                parties.append({"name": (led.get("NAME") or _text(led, "NAME") or "").strip(),
+                                "group": parent, "amount": amount})
+        parties.sort(key=lambda r: -r["amount"])
+        total = round(sum(r["amount"] for r in parties), 2)
+        tally_total = round(sign * group_closing.get(root, 0.0), 2)
+        matches = abs(total - tally_total) < 1
+        if not matches:
+            log.warning("Sundry %s: parties add up to %.2f but Tally's group total is %.2f", key, total, tally_total)
+        result[key] = {"total": total, "count": len(parties), "parties": parties,
+                       "tally_total": tally_total, "matches": matches}
+    return result
+
+
+def push_party_balances(balances):
+    _firestore_db().collection(PERIOD_COLLECTION).document(PARTY_BALANCES_DOC).set(
+        {**balances, "as_of": datetime.datetime.now(datetime.timezone.utc).isoformat()})
+
+
+def _sync_party_balances(dry_run=False, dump_raw_dir=None):
+    """Reads and stores the debtor and creditor balances as of today. A
+    failure is logged and leaves the last stored figures in place -- it
+    never stops the rest of the sync."""
+    try:
+        balances = fetch_party_balances(datetime.date.today(), dump_raw_dir)
+    except TallyError as e:
+        log.warning("Sundry debtors/creditors not read -- %s", e)
+        return
+    log.info("Sundry debtors Rs.%s (%d parties) | Sundry creditors Rs.%s (%d parties)",
+             balances["debtors"]["total"], balances["debtors"]["count"],
+             balances["creditors"]["total"], balances["creditors"]["count"])
+    if dry_run:
+        print(json.dumps(balances, indent=2, ensure_ascii=False))
+        return
+    try:
+        push_party_balances(balances)
+    except Exception as e:
+        log.warning("Sundry debtors/creditors not written -- %s", e)
+
+
 def push_pending_proformas(records, covered_from):
     """Replaces the pending Proforma list with what Tally has now, keeping
     any entry dated before covered_from -- the same limit as the Delivery
@@ -1189,6 +1284,7 @@ def run(date, dry_run=False, dump_raw_dir=None):
         print(f"\n{len(proformas)} Proforma Invoice(s) found (not written, dry run):")
         print(json.dumps(proformas, indent=2, ensure_ascii=False))
         sync_period_reports(date, date, dry_run=True, dump_raw_dir=dump_raw_dir)
+        _sync_party_balances(dry_run=True, dump_raw_dir=dump_raw_dir)
         log.info("Dry run -- nothing written to Firestore.")
         return
 
@@ -1199,6 +1295,7 @@ def run(date, dry_run=False, dump_raw_dir=None):
               "%d pending proforma invoices)",
               FIRESTORE_COLLECTION, date_iso, len(delivery_challans), removed, listed)
     sync_period_reports(date, date, dump_raw_dir=dump_raw_dir)
+    _sync_party_balances(dump_raw_dir=dump_raw_dir)
 
 
 def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
@@ -1266,6 +1363,7 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
               succeeded, day_count, f", {len(failed)} failed ({', '.join(failed)})" if failed else "",
               len(delivery_challans), removed, listed)
     sync_period_reports(from_date, to_date, dry_run=dry_run, dump_raw_dir=dump_raw_dir)
+    _sync_party_balances(dry_run=dry_run, dump_raw_dir=dump_raw_dir)
 
 
 # ---------------------------------------------------------------------------
