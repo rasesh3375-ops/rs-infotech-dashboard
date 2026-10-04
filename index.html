@@ -712,9 +712,17 @@ async function loadPlPeriod(period, token){
   const rangeLabelEl = document.getElementById('plRangeLabel');
 
   if (period === 'daily'){
-    const pl = (lastDailyData && lastDailyData.profit_and_loss) || { needs_review: true, net_profit_loss: null };
-    renderPlAmount(pl.net_profit_loss, pl.needs_review || pl.net_profit_loss === null,
-      'Could not read a clear P&L figure from Tally for this day — check the sync script log. (' + (pl.reason || 'unknown reason') + ')');
+    // A day with no synced document has no P&L at all -- that's "not
+    // synced yet", not a P&L Tally couldn't read. It used to show the
+    // second, with "(unknown reason)", on every unsynced day, e.g. a
+    // Sunday opened on the owner's iPhone before anything had run.
+    const pl = lastDailyData && lastDailyData.profit_and_loss;
+    if (!pl){
+      renderPlAmount(null, true, "This day hasn't been synced from Tally yet.");
+    } else {
+      renderPlAmount(pl.net_profit_loss, pl.needs_review || pl.net_profit_loss === null,
+        'Could not read a clear P&L figure from Tally for this day — check the sync script log. (' + (pl.reason || 'unknown reason') + ')');
+    }
     rangeLabelEl.textContent = '';
     return;
   }

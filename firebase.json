@@ -9,6 +9,12 @@
       "tally-sync/**",
       "raw/**",
       "*.md"
+    ],
+    "headers": [
+      {
+        "source": "**",
+        "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
+      }
     ]
   }
 }
