@@ -1,0 +1,29 @@
+# Checks every hour in office hours that the Tally sync is still running,
+# and emails "Tally Sync Alert" when it has stopped and "Tally Sync Working
+# Again" when it recovers -- one email each way, not one an hour. See
+# .github/scripts/sync_alert.py. Uses the same four secrets as the daily
+# report emails.
+name: Sync alert
+
+on:
+  schedule:
+    # 05:15-14:15 UTC, Monday to Saturday: 10:45 AM to 7:45 PM in India,
+    # starting after the 10 AM sync has had time to run.
+    - cron: '15 5-14 * * 1-6'
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install --quiet firebase-admin
+      - run: python .github/scripts/sync_alert.py
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}

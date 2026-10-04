@@ -20,7 +20,8 @@ exit /b
 #   2. Installs Python for this Windows user if there isn't one.
 #   3. Downloads the sync scripts from GitHub into C:\rs-infotech-sync.
 #   4. Installs the two Python packages the sync needs.
-#   5. Creates the daily 10 AM scheduled task for this user.
+#   5. Creates the daily 10 AM scheduled task for this user, and makes this
+#      the main sync PC (another PC running the sync becomes the backup).
 #   6. Checks the key against the database and that Tally answers.
 # No administrator rights are needed for any of it.
 # ---------------------------------------------------------------------------
@@ -123,6 +124,9 @@ foreach ($name in $files.Keys) {
 }
 Copy-Item -Force $keySource (Join-Path $dir 'service-account.json')
 Set-Content -Path (Join-Path $dir 'python_path.txt') -Value $python -Encoding ASCII
+# This PC is the main sync PC; another PC running the sync (the laptop)
+# becomes the backup and only syncs while this one is quiet.
+Set-Content -Path (Join-Path $dir 'sync_role.txt') -Value 'primary' -Encoding ASCII
 Ok "Installed in $dir"
 
 # --- 4. Python packages -----------------------------------------------------

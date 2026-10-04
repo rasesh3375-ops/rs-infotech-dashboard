@@ -164,8 +164,16 @@ try {
 # every line a native program writes to stderr -- which is where Python's
 # logging goes, INFO lines included -- in a NativeCommandError, so the old
 # log read as a wall of errors even on a run that worked.
-cmd /c "python sync_tally.py --backfill-from $from --backfill-to $to >> `"$logFile`" 2>&1"
+# --if-leader: on the backup PC (no sync_role.txt) this exits with code 3
+# straight away while the main sync PC is active, so the two PCs don't
+# both re-sync the week every morning. The full-year marker is only
+# written by a run that actually synced.
+cmd /c "python sync_tally.py --if-leader --backfill-from $from --backfill-to $to >> `"$logFile`" 2>&1"
 $exitCode = $LASTEXITCODE
+if ($exitCode -eq 3) {
+    Add-Content -Path $logFile -Encoding ASCII -Value "----- Skipped: the main sync PC is active -----"
+    exit 0
+}
 Add-Content -Path $logFile -Encoding ASCII -Value "----- Exit code: $exitCode -----"
 if ($fullResync -and $exitCode -eq 0) {
     Set-Content -Path $marker -Encoding ASCII -Value "$dataFormat $timestamp"

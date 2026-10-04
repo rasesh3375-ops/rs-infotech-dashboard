@@ -1200,15 +1200,22 @@ function renderSyncState(){
       cls = 'bad';
     } else if (waiting){
       text = 'Asking the Tally PC…'; cls = 'busy';
-    } else if (running){
-      text = 'Syncing from Tally…'; cls = 'busy';
-    } else if (!st.finished_at){
-      text = online ? 'Tally PC connected' : 'Tally PC not connected yet';
-    } else if (st.ok){
-      text = 'Synced ' + syncWhen(st.finished_at);
     } else {
-      text = 'Sync failed ' + syncWhen(st.finished_at) + (st.message ? ': ' + st.message : '');
-      cls = 'bad';
+      // The latest good sync of any kind -- the listener's (finished_at)
+      // or the 10 AM run's and anything run by hand (last_ok_at) -- and
+      // which PC did it, now that a backup PC can take over.
+      const lastOk = [st.ok ? st.finished_at : null, st.last_ok_at].filter(Boolean).sort().pop();
+      const okHost = lastOk && lastOk === st.last_ok_at ? st.last_ok_host : st.host;
+      if (running){
+        text = 'Syncing from Tally' + (st.host ? ' on ' + st.host : '') + '…'; cls = 'busy';
+      } else if (st.finished_at && !st.ok && st.finished_at >= (lastOk || '')){
+        text = 'Sync failed ' + syncWhen(st.finished_at) + (st.message ? ': ' + st.message : '');
+        cls = 'bad';
+      } else if (lastOk){
+        text = 'Synced ' + syncWhen(lastOk) + (okHost ? ' · ' + okHost : '');
+      } else {
+        text = online ? 'Tally PC connected' : 'Tally PC not connected yet';
+      }
     }
     if (seen && !online && !waiting && !running) text += ' · Tally PC offline since ' + syncWhen(st.listener_seen_at);
     btn.disabled = running || (waiting && !noAnswer);

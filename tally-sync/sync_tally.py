@@ -113,6 +113,20 @@ SYNC_CONTROL_COLLECTION = "sync_control"
 HOURLY_SYNC_FROM_HOUR = 10
 HOURLY_SYNC_TO_HOUR = 20
 
+# Where Tally keeps the company data. The listener watches it and syncs
+# today about a minute after entries stop changing, so the dashboard is a
+# couple of minutes behind Tally instead of up to an hour. Overridden by
+# tally_data_dir.txt next to this script, if a PC sees it at another path.
+TALLY_DATA_DIR = r"\\accounts\D\Tally.ERP9_GST\Data"
+CHANGE_QUIET_SECONDS = 60          # wait for entries to stop changing
+CHANGE_MIN_GAP_MINUTES = 5         # and never sync more often than this
+
+# Two PCs can run the sync: the main one (sync_role.txt says "primary";
+# Setup-Tally-Sync.cmd writes it on the accounts PC) and a backup (no file
+# -- the owner's laptop). The backup only syncs while the main one hasn't
+# checked in for AGENT_STALE_MINUTES, so the two never both sync.
+AGENT_STALE_MINUTES = 15
+
 REQUEST_TIMEOUT_SECONDS = 120
 
 log = logging.getLogger("tally_sync")
@@ -1534,27 +1548,119 @@ LISTENER_HEARTBEAT_SECONDS = 300
 LISTENER_STALE_REQUEST_MINUTES = 30
 
 
+def _sync_role():
+    """"primary" on the main sync PC, "backup" anywhere else -- see
+    AGENT_STALE_MINUTES."""
+    try:
+        with open(os.path.join(SCRIPT_DIR, "sync_role.txt")) as f:
+            return "primary" if f.read().strip().lower() == "primary" else "backup"
+    except OSError:
+        return "backup"
+
+
+def _agent_doc_id(host):
+    return "agent_" + re.sub(r"[^A-Za-z0-9_.-]", "_", host)
+
+
+def _primary_elsewhere(control, host, now_utc):
+    """The name of another PC that is the main sync PC and has checked in
+    within AGENT_STALE_MINUTES, or None."""
+    for doc in control.stream():
+        if not doc.id.startswith("agent_"):
+            continue
+        d = doc.to_dict() or {}
+        if d.get("role") != "primary" or d.get("host") == host:
+            continue
+        try:
+            seen = datetime.datetime.fromisoformat(d.get("seen_at") or "")
+        except ValueError:
+            continue
+        if now_utc - seen <= datetime.timedelta(minutes=AGENT_STALE_MINUTES):
+            return d.get("host")
+    return None
+
+
+def _tally_data_dir():
+    try:
+        with open(os.path.join(SCRIPT_DIR, "tally_data_dir.txt")) as f:
+            return f.read().strip() or TALLY_DATA_DIR
+    except OSError:
+        return TALLY_DATA_DIR
+
+
+def _newest_data_change(data_dir):
+    """The newest modification time among the files in Tally's data folder
+    and its company folders one level down, or None if the folder can't be
+    read. Only compared with itself, never with this PC's clock, so a
+    file server whose clock is off makes no difference."""
+    newest = 0.0
+    try:
+        with os.scandir(data_dir) as top:
+            for entry in top:
+                if entry.is_file():
+                    newest = max(newest, entry.stat().st_mtime)
+                elif entry.is_dir():
+                    with os.scandir(entry.path) as inner:
+                        for f in inner:
+                            if f.is_file():
+                                newest = max(newest, f.stat().st_mtime)
+    except OSError:
+        return None
+    return newest
+
+
 class _Listener:
     """The state run_listener carries between polls. Each tick reads the
     request document once and acts on at most one thing, so it can be
-    driven and tested one poll at a time."""
+    driven and tested one poll at a time.
 
-    def __init__(self, db, run_sync):
+    What makes it sync, in order: a Sync now press; Tally's data having
+    changed and then stayed quiet for CHANGE_QUIET_SECONDS (at most every
+    CHANGE_MIN_GAP_MINUTES); the hourly sync during office hours, as a
+    fallback when the data folder can't be watched. All of it only on the
+    PC whose turn it is -- see _primary_elsewhere."""
+
+    def __init__(self, db, run_sync, role=None, data_dir=None, newest_change=_newest_data_change):
         self.control = db.collection(SYNC_CONTROL_COLLECTION)
         self.run_sync = run_sync
         self.host = platform.node()
+        self.role = role or _sync_role()
+        self.data_dir = data_dir or _tally_data_dir()
+        self.newest_change = newest_change
         status = self.control.document("status").get()
         status = (status.to_dict() or {}) if status.exists else {}
         self.handled_request_id = status.get("handled_request_id")
         self.last_hourly_slot = status.get("last_hourly_slot")
         self.last_beat = 0.0
+        self.active = self.role == "primary"
+        self.last_sync = 0.0
+        # Whatever the folder looks like at start-up counts as synced; a
+        # change from here on is what triggers a sync.
+        self.synced_change = self.newest_change(self.data_dir)
+        self.seen_change, self.seen_change_at = self.synced_change, 0.0
+        if self.synced_change is None:
+            log.info("Tally's data folder %s can't be read from here -- syncing hourly only.", self.data_dir)
 
     def _status(self, fields):
         self.control.document("status").set(fields, merge=True)
 
+    def _heartbeat(self, now_utc):
+        """Every few minutes: say this PC is alive, and work out whether
+        it's this PC's turn to sync."""
+        self.control.document(_agent_doc_id(self.host)).set(
+            {"host": self.host, "role": self.role, "seen_at": now_utc.isoformat(), "active": self.active})
+        was_active = self.active
+        other = None if self.role == "primary" else _primary_elsewhere(self.control, self.host, now_utc)
+        self.active = other is None
+        if self.active != was_active:
+            log.info("%s -- %s", "Main sync PC is quiet, this backup PC takes over" if self.active
+                     else f"Main sync PC {other} is back, this backup PC stands by", self.host)
+        if self.active:
+            self._status({"listener_seen_at": now_utc.isoformat(), "host": self.host, "role": self.role})
+
     def tick(self, now_local, now_utc):
         if time.time() - self.last_beat >= LISTENER_HEARTBEAT_SECONDS:
-            self._status({"listener_seen_at": now_utc.isoformat(), "host": self.host})
+            self._heartbeat(now_utc)
             self.last_beat = time.time()
 
         request = self.control.document("request").get()
@@ -1562,6 +1668,8 @@ class _Listener:
         request_id = request.get("request_id")
         if request_id and request_id != self.handled_request_id:
             self.handled_request_id = request_id
+            if not self.active:
+                return      # the main PC answers it
             requested_at = request.get("requested_at")
             fresh = (requested_at is not None and
                      now_utc - requested_at <= datetime.timedelta(minutes=LISTENER_STALE_REQUEST_MINUTES))
@@ -1574,6 +1682,18 @@ class _Listener:
                 self._status({"handled_request_id": request_id})
             return
 
+        newest = self.newest_change(self.data_dir)
+        if newest is not None and newest != self.seen_change:
+            self.seen_change, self.seen_change_at = newest, time.time()
+        if not self.active:
+            return
+        if (self.seen_change is not None and self.seen_change != self.synced_change
+                and time.time() - self.seen_change_at >= CHANGE_QUIET_SECONDS
+                and time.time() - self.last_sync >= CHANGE_MIN_GAP_MINUTES * 60):
+            self.synced_change = self.seen_change
+            self._sync("change", {})
+            return
+
         slot = now_local.strftime("%Y-%m-%dT%H")
         if (HOURLY_SYNC_FROM_HOUR <= now_local.hour <= HOURLY_SYNC_TO_HOUR
                 and slot != self.last_hourly_slot):
@@ -1581,6 +1701,7 @@ class _Listener:
             self._sync("hourly", {"last_hourly_slot": slot})
 
     def _sync(self, trigger, extra):
+        self.last_sync = time.time()
         self._status({**extra, "state": "running", "trigger": trigger, "host": self.host,
                       "started_at": _utc_now().isoformat()})
         ok, message = self.run_sync()
@@ -1656,6 +1777,22 @@ def run_listener():
         time.sleep(LISTENER_POLL_SECONDS)
 
 
+def _record_result(ok, message, dry_run=False):
+    """Notes every sync's outcome -- the scheduled one, the listener's, one
+    run by hand -- where the dashboard and the "sync has stopped" alert
+    (.github/scripts/sync_alert.py) read it. Best effort: never turns a
+    good sync into a failed one."""
+    if dry_run:
+        return
+    now = _utc_now().isoformat()
+    fields = ({"last_ok_at": now, "last_ok_host": platform.node()} if ok
+              else {"last_error_at": now, "last_error_host": platform.node(), "last_error": message[:400]})
+    try:
+        _firestore_db().collection(SYNC_CONTROL_COLLECTION).document("status").set(fields, merge=True)
+    except Exception as e:
+        log.warning("Sync outcome not recorded -- %s", e)
+
+
 def run_check():
     """Checks the two things a sync needs, the same way a sync uses them,
     and prints one CHECK line for each: the Firebase key (reads from the
@@ -1700,6 +1837,8 @@ def main():
     parser.add_argument("--dump-raw-dir", default=None, help="Save every raw Tally XML response here for debugging")
     parser.add_argument("--check", action="store_true",
                         help="Only check that the Firebase key works and Tally answers with the company readable, then exit")
+    parser.add_argument("--if-leader", action="store_true",
+                        help="Skip (exit code 3) when this is the backup PC and the main sync PC is active")
     parser.add_argument("--listen", action="store_true",
                         help="Keep running: sync today when the dashboard's Sync now button is pressed, and hourly")
     args = parser.parse_args()
@@ -1718,6 +1857,16 @@ def main():
     if args.check:
         sys.exit(run_check())
 
+    if args.if_leader and _sync_role() != "primary":
+        try:
+            other = _primary_elsewhere(_firestore_db().collection(SYNC_CONTROL_COLLECTION), platform.node(), _utc_now())
+        except Exception as e:
+            other = None
+            log.warning("Couldn't check for the main sync PC (%s) -- syncing from here.", e)
+        if other:
+            log.info("Main sync PC %s is active -- this backup PC skips the scheduled sync.", other)
+            sys.exit(3)
+
     try:
         with _exclusive_lock("sync.lock", 40 * 60):
             if args.backfill_from:
@@ -1731,10 +1880,13 @@ def main():
                 run(date, dry_run=args.dry_run, dump_raw_dir=args.dump_raw_dir)
     except TallyError as e:
         log.error("Tally error: %s", e)
+        _record_result(False, f"Tally error: {e}", args.dry_run)
         sys.exit(1)
     except Exception as e:
         log.error("Sync failed: %s", e, exc_info=args.verbose)
+        _record_result(False, f"Sync failed: {e}", args.dry_run)
         sys.exit(1)
+    _record_result(True, "", args.dry_run)
 
 
 if __name__ == "__main__":
