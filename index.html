@@ -320,8 +320,10 @@
     /* The tiles as rows of one list. */
     .dash-grid{ display:flex; flex-direction:column; gap:0; background:var(--panel); border:1px solid var(--panel-edge); border-radius:14px; overflow:hidden; }
     /* In one list, Sundry Debtors and Creditors read best together, so the
-       two pending lists move to the end. */
+       two pending lists move after them, and Net profit / loss comes last,
+       as the bottom line -- the owner's choice for the phone. */
     #challanCard, #proformaCard{ order:1; }
+    .dash-grid .pl-card{ order:2; }
     .card{
       display:grid; grid-template-columns:minmax(0, 1fr) auto; column-gap:10px; align-items:center;
       border:0; border-radius:0; box-shadow:none; border-top:1px solid rgba(17,17,17,0.08); padding:11px 14px;
