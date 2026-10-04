@@ -621,6 +621,69 @@ def _ledger_touching_vouchers_from(vouchers, ledger_names, in_label, out_label):
     return {"count": len(result), "vouchers": result}
 
 
+def fetch_cash_closing_balances(date, cash_ledgers, dump_raw_dir=None):
+    """Tally's own closing balance of each cash-in-hand ledger at the end of
+    the given day, in rupees, cash in hand as a positive figure. Tally
+    writes a debit balance -- which cash in hand is -- as a negative
+    number, hence the sign flip.
+
+    Asked of Tally rather than added up here because Tally's figure is the
+    one on its Cash Book, opening balance and all. Whether this export
+    really honours the date is checked on every day it's used, in
+    _cash_balance_for, against the day's own cash entries."""
+    xml_req = _collection_request("CashBalances", "Ledger", ["NAME", "PARENT", "CLOSINGBALANCE"],
+                                  _fy_start(date), date)
+    root = _post_xml(xml_req, dump_raw_dir, f"cash_balances_{date.isoformat()}")
+    balances = {}
+    for led in _collection_records(root, "LEDGER"):
+        name = (led.get("NAME") or _text(led, "NAME") or "").strip()
+        if name in cash_ledgers:
+            balances[name] = -_num(led, "CLOSINGBALANCE")
+    return balances
+
+
+def _cash_movement(vouchers, cash_ledgers):
+    """The day's net change in cash in hand from its own vouchers: every
+    entry on a cash ledger, debits (money in) positive. A transfer between
+    two cash ledgers nets to nothing, as it should."""
+    total = 0.0
+    for v in vouchers:
+        for entry in v.findall(".//ALLLEDGERENTRIES.LIST"):
+            name = (entry.get("NAME") or _text(entry, "LEDGERNAME") or "").strip()
+            if name in cash_ledgers:
+                total -= _num(entry, "AMOUNT")
+    return total
+
+
+def _cash_balance_for(date, vouchers, cash_ledgers, cache, dump_raw_dir=None):
+    """Opening and closing cash in hand for one day, for the daily cash
+    email. Opening is the closing at the end of the day before, as on
+    Tally's Cash Book. cache maps a date to the balances already fetched,
+    so a backfill asks Tally once per day, not twice.
+
+    "matches" is the safety check: opening + the day's cash entries must
+    equal closing to the rupee. If Tally's export ever ignored the date --
+    its voucher export does exactly that -- every day with cash movement
+    would fail this check, and the email says the balances couldn't be
+    confirmed rather than printing a wrong one. A failure here never stops
+    the rest of the day's sync."""
+    try:
+        for d in (date - datetime.timedelta(days=1), date):
+            if d not in cache:
+                cache[d] = fetch_cash_closing_balances(d, cash_ledgers, dump_raw_dir)
+    except TallyError as e:
+        log.warning("%s: cash balances not read -- %s", date, e)
+        return {"error": str(e)}
+    opening, closing = sum(cache[date - datetime.timedelta(days=1)].values()), sum(cache[date].values())
+    movement = _cash_movement(vouchers, cash_ledgers)
+    matches = abs(opening + movement - closing) < 1
+    if not matches:
+        log.warning("%s: cash balances don't tie -- opening %.2f + movement %.2f != closing %.2f",
+                    date, opening, movement, closing)
+    return {"opening": round(opening, 2), "closing": round(closing, 2),
+            "movement": round(movement, 2), "matches": matches}
+
+
 def _cash_vouchers_from(vouchers, cash_ledgers):
     return _ledger_touching_vouchers_from(vouchers, cash_ledgers, "cash_in", "cash_out")
 
@@ -1028,7 +1091,8 @@ def sync_period_reports(from_date, to_date, dry_run=False, dump_raw_dir=None):
              f", {len(failed)} failed ({', '.join(failed)})" if failed else "")
 
 
-def _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, bank_ledgers, dump_raw_dir=None):
+def _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, bank_ledgers, dump_raw_dir=None,
+                   cash_balance_cache=None):
     payload = {
         "date": date.strftime("%Y-%m-%d"),
         "synced_at": datetime.datetime.now().isoformat(),
@@ -1037,6 +1101,8 @@ def _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, bank_ledg
         "purchase": _filter_by_class(vouchers, voucher_type_parents, "purchase"),
         "profit_and_loss": fetch_profit_and_loss(date, dump_raw_dir),
         "cash_vouchers": _cash_vouchers_from(vouchers, cash_ledgers),
+        "cash_balance": _cash_balance_for(date, vouchers, cash_ledgers,
+                                          {} if cash_balance_cache is None else cash_balance_cache, dump_raw_dir),
         "bank_vouchers": _bank_vouchers_from(vouchers, bank_ledgers),
     }
     log.info(
@@ -1154,12 +1220,14 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
 
     succeeded = 0
     failed = []
+    cash_balance_cache = {}
     cur = from_date
     while cur <= to_date:
         date_str = cur.strftime("%Y-%m-%d")
         try:
             vouchers = vouchers_by_date.get(_fmt_date(cur), [])
-            payload = _build_payload(cur, vouchers, voucher_type_parents, cash_ledgers, bank_ledgers, dump_raw_dir)
+            payload = _build_payload(cur, vouchers, voucher_type_parents, cash_ledgers, bank_ledgers, dump_raw_dir,
+                                     cash_balance_cache)
             if not dry_run:
                 push_to_firestore(date_str, payload)
             succeeded += 1

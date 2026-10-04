@@ -69,11 +69,27 @@ def build_email(day, report):
     cash_in = sum(v.get("amount") or 0 for v in rows if v.get("direction") == "cash_in")
     cash_out = sum(v.get("amount") or 0 for v in rows if v.get("direction") != "cash_in")
     net = cash_in - cash_out
-    subject = (f"Cash transactions {day:%d %b %Y}: {len(rows)} voucher{'s' if len(rows) != 1 else ''}, "
-               f"In {inr(cash_in)}, Out {inr(cash_out)}")
+    # Opening and closing cash in hand are Tally's own (sync_tally.py,
+    # _cash_balance_for), shown only when they tie to the day's entries.
+    # A day synced before they were stored, or one that didn't tie, says
+    # so instead of showing a figure nobody can trust.
+    bal = report.get("cash_balance") or {}
+    balances_ok = bal.get("matches") is True
+    if balances_ok:
+        balance_note = ""
+    elif "matches" in bal:
+        balance_note = "Opening and closing balance couldn't be confirmed against Tally for this day -- check its Cash Book."
+    else:
+        balance_note = "Opening and closing balance appear once this day is re-synced from Tally."
+    subject = (f"Cash {day:%d %b %Y}: " + (f"Opening {inr(bal['opening'])}, " if balances_ok else "") +
+               f"In {inr(cash_in)}, Out {inr(cash_out)}" + (f", Closing {inr(bal['closing'])}" if balances_ok else ""))
 
-    lines = [f"R. S. Infotech -- cash transactions for {label}", "",
-             f"In:  {inr(cash_in)}", f"Out: {inr(cash_out)}", f"Net: {inr(net)}", f"Vouchers: {len(rows)}", ""]
+    lines = [f"R. S. Infotech -- cash transactions for {label}", ""]
+    if balances_ok:
+        lines.append(f"Opening: {inr(bal['opening'])}")
+    lines += [f"In:      {inr(cash_in)}", f"Out:     {inr(cash_out)}"]
+    lines.append(f"Closing: {inr(bal['closing'])}" if balances_ok else f"Net:     {inr(net)}")
+    lines += [f"Vouchers: {len(rows)}"] + ([balance_note] if balance_note else []) + [""]
     for v in rows:
         lines.append(f"{'IN ' if v.get('direction') == 'cash_in' else 'OUT'}  {inr(v.get('amount')):>12}  "
                      f"{v.get('party') or '(no party)'} -- {v.get('description') or ''} ({v.get('type') or ''})")
@@ -94,13 +110,16 @@ def build_email(day, report):
     if not rows:
         table = f'<tr><td {cell} colspan="4">No cash vouchers on this day.</td></tr>'
     box = 'style="padding:10px 14px;border:1px solid #e5e1dc;border-radius:8px"'
+    tile = lambda title, value, color="#161311": (
+        f'<td {box}><div style="color:#6e6358;font-size:12px">{title}</div>'
+        f'<div style="font-size:20px;font-weight:800;color:{color}">{e(value)}</div></td>')
+    tiles = ((tile("OPENING", inr(bal["opening"])) if balances_ok else "") +
+             tile("IN", inr(cash_in), "#167a51") + tile("OUT", inr(cash_out), "#d31a14") +
+             (tile("CLOSING", inr(bal["closing"])) if balances_ok else tile("NET", inr(net))))
     body = (
-        '<table style="border-collapse:separate;border-spacing:8px 0;margin:0 -8px 14px"><tr>'
-        f'<td {box}><div style="color:#6e6358;font-size:12px">IN</div><div style="font-size:20px;font-weight:800;color:#167a51">{e(inr(cash_in))}</div></td>'
-        f'<td {box}><div style="color:#6e6358;font-size:12px">OUT</div><div style="font-size:20px;font-weight:800;color:#d31a14">{e(inr(cash_out))}</div></td>'
-        f'<td {box}><div style="color:#6e6358;font-size:12px">NET</div><div style="font-size:20px;font-weight:800">{e(inr(net))}</div></td>'
-        f'<td {box}><div style="color:#6e6358;font-size:12px">VOUCHERS</div><div style="font-size:20px;font-weight:800">{len(rows)}</div></td>'
-        '</tr></table>'
+        f'<table style="border-collapse:separate;border-spacing:8px 0;margin:0 -8px 6px"><tr>{tiles}</tr></table>'
+        f'<p style="margin:0 0 12px;font-size:12.5px;color:#6e6358">{len(rows)} voucher{"s" if len(rows) != 1 else ""}'
+        + (f' · <span style="color:#d31a14">{e(balance_note)}</span>' if balance_note else "") + '</p>'
         '<table style="border-collapse:collapse;width:100%;font-size:13.5px">'
         '<tr style="background:#eef2f8;text-align:left"><th style="padding:6px 8px">Party</th><th style="padding:6px 8px">Type</th>'
         '<th style="padding:6px 8px"></th><th style="padding:6px 8px;text-align:right">Amount</th></tr>'
