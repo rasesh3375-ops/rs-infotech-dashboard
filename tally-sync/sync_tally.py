@@ -110,6 +110,14 @@ STOCK_ENABLED = False
 # re-sync asking it for all 187 days was part of the load that hung Tally
 # on 5 Oct; the daily emails only ever need yesterday's.
 BALANCE_DAYS = 8
+# Off: a Ledger collection asking for every ledger's CLOSINGBALANCE is what
+# froze Tally on 5 Oct 2026. The per-request log showed it exactly --
+# "Tally -> ledger_balances_2026-09-26" and no answer in 120 s, right after
+# 180 daily P&L requests had each come back in under a second. The cash and
+# bank opening/closing balances and the Sundry Debtors/Creditors tiles both
+# came from that kind of request, so neither is asked for until they're
+# worked out another way.
+LEDGER_BALANCES_ENABLED = False
 STOCK_PAUSE_DAYS = 7
 STOCK_TIMEOUT_SECONDS = 120
 
@@ -1359,7 +1367,7 @@ def _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, bank_ledg
         "cash_vouchers": _cash_vouchers_from(vouchers, cash_ledgers),
         **({"cash_balance": _balance_for(date, vouchers, cash_ledgers, balance_cache, dump_raw_dir, "cash"),
             "bank_balance": _balance_for(date, vouchers, bank_ledgers, balance_cache, dump_raw_dir, "bank")}
-           if (datetime.date.today() - date).days <= BALANCE_DAYS else {}),
+           if LEDGER_BALANCES_ENABLED and (datetime.date.today() - date).days <= BALANCE_DAYS else {}),
         "bank_vouchers": _bank_vouchers_from(vouchers, bank_ledgers),
     }
     log.info(
@@ -1517,7 +1525,8 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
               succeeded, day_count, f", {len(failed)} failed ({', '.join(failed)})" if failed else "",
               len(delivery_challans), removed, listed)
     sync_period_reports(from_date, to_date, dry_run=dry_run, dump_raw_dir=dump_raw_dir)
-    _sync_party_balances(dry_run=dry_run, dump_raw_dir=dump_raw_dir)
+    if LEDGER_BALANCES_ENABLED:
+        _sync_party_balances(dry_run=dry_run, dump_raw_dir=dump_raw_dir)
     # As of today, like the party balances; the backfill's last day is
     # yesterday, so there's no P&L for today at hand to check it against.
     if STOCK_ENABLED:
