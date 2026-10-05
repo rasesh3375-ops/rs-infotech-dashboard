@@ -1,6 +1,6 @@
 # Emails yesterday's Daily Cash Transactions, Daily Bank Transactions,
 # Daily Purchase Entries and Daily Sales Entries every morning, and the
-# Pending Delivery Challans, Pending Proforma Invoices and the Stock Summary every Saturday,
+# Pending Delivery Challans, Pending Proforma Invoices, the Stock Summary and the Debtors Pending 60+ Days every Saturday,
 # one email each, from the figures the Tally sync stored in Firestore -- see
 # .github/scripts/daily_report_emails.py. Runs on GitHub's servers, so it
 # doesn't need any office PC to be on.
@@ -15,7 +15,7 @@ on:
     # 05:30 UTC is 11:00 AM in India, after the 10 AM Tally sync. GitHub
     # can start scheduled runs a little late at busy times.
     - cron: '30 5 * * *'
-    # 05:35 UTC on Saturdays: the two pending lists and the stock, just after the daily ones.
+    # 05:35 UTC on Saturdays: the two pending lists, the stock and the debtors 60+ days, just after the daily ones.
     - cron: '35 5 * * 6'
   workflow_dispatch:
     inputs:
@@ -24,9 +24,9 @@ on:
         required: false
         default: ''
       report:
-        description: 'Which emails (daily = the four daily ones, weekly = the two pending lists and the stock)'
+        description: 'Which emails (daily = the four daily ones, weekly = the two pending lists, the stock and the debtors 60+ days)'
         type: choice
-        options: [daily, weekly, cash, bank, purchase, sales, challans, proformas, stock]
+        options: [daily, weekly, cash, bank, purchase, sales, challans, proformas, stock, debtors]
         default: daily
 
 jobs:

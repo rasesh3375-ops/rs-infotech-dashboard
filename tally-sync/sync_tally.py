@@ -127,6 +127,9 @@ STOCK_ENABLED = True
 # run, one attempt each, and after Tally fails to answer one in time, none
 # is asked for again for BALANCES_PAUSE_HOURS.
 BALANCE_DAYS = 8
+# A bill this old or older counts towards a party's "over_60" -- the figure
+# the weekly Debtors Pending 60+ Days email is about.
+OVERDUE_REPORT_DAYS = 60
 GROUP_SUMMARY_TIMEOUT_SECONDS = 30
 PARTY_BALANCES_EVERY_MINUTES = 60
 BALANCES_PAUSE_HOURS = 12
@@ -1092,16 +1095,20 @@ def fetch_bills(kind, upto, dump_raw_dir=None, timeout=60):
 
 def oldest_bills_by_party(bills, today):
     """{party: {"oldest": YYYY-MM-DD, "days": days since that bill's date,
-    "bills": how many are pending}} -- the oldest unpaid bill of each
-    party, counting only bills still owed (an advance isn't a bill waiting
-    to be paid)."""
+    "bills": how many are pending, "over_60": what those of them raised
+    OVERDUE_REPORT_DAYS or more days ago add up to}} -- the oldest unpaid
+    bill of each party, counting only bills still owed (an advance isn't a
+    bill waiting to be paid)."""
     out = {}
+    cutoff = (today - datetime.timedelta(days=OVERDUE_REPORT_DAYS)).isoformat()
     for b in bills:
         if b["amount"] <= 0.5 or not b["date"]:
             continue
-        p = out.setdefault(b["party"], {"oldest": b["date"], "bills": 0})
+        p = out.setdefault(b["party"], {"oldest": b["date"], "bills": 0, "over_60": 0.0})
         p["bills"] += 1
         p["oldest"] = min(p["oldest"], b["date"])
+        if b["date"] <= cutoff:
+            p["over_60"] = round(p["over_60"] + b["amount"], 2)
     for p in out.values():
         p["days"] = (today - datetime.date.fromisoformat(p["oldest"])).days
     return out
@@ -1243,14 +1250,15 @@ def _add_days_pending(result, today, balances, dump_raw_dir=None):
         for party, info in by_party.items():
             parent = _LEDGER_PARENTS.get(party)
             if parent:
-                u = under.setdefault(parent, {"oldest": info["oldest"], "bills": 0})
+                u = under.setdefault(parent, {"oldest": info["oldest"], "bills": 0, "over_60": 0.0})
                 u["oldest"] = min(u["oldest"], info["oldest"])
                 u["bills"] += info["bills"]
+                u["over_60"] = round(u["over_60"] + info["over_60"], 2)
         dated = 0
         for row in result[key]["parties"]:
             info = by_party.get(row["name"]) or under.get(row["name"])
             if info:
-                row.update(oldest=info["oldest"], bills=info["bills"],
+                row.update(oldest=info["oldest"], bills=info["bills"], over_60=info["over_60"],
                            days=(today - datetime.date.fromisoformat(info["oldest"])).days)
                 dated += 1
         result[key]["bills_read"] = True

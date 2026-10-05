@@ -8,11 +8,12 @@ figures the Tally sync has already stored in Firestore (daily_reports):
   Daily Purchase Entries    purchases before and with GST, every entry
   Daily Sales Entries       sales before and with GST, every entry
 
-and every Saturday, three more:
+and every Saturday, four more:
 
   Pending Delivery Challans   every Delivery Note still in Tally, oldest first
   Pending Proforma Invoices   every Proforma Invoice still in Tally, oldest first
   Stock Summary               every item in stock, as on the Stock tile
+  Debtors Pending 60+ Days    every debtor whose oldest unpaid bill is 60+ days old
 
 Each email's subject is its report name and the date, nothing else, so the
 four sort and search cleanly in the inbox.
@@ -54,6 +55,10 @@ CHALLAN_COLLECTION = "delivery_challans"
 PERIOD_COLLECTION = "period_reports"
 PENDING_PROFORMA_DOC = "pending_proforma_invoices"
 STOCK_DOC = "stock_summary"
+PARTY_BALANCES_DOC = "sundry_balances"
+# The weekly debtors email lists a debtor whose oldest unpaid bill is at
+# least this old; the sync adds up each one's bills this old as "over_60".
+DEBTOR_OVERDUE_DAYS = 60
 # A pending item at least this old is counted out separately, so the ones
 # that have been waiting a month stand out from this week's.
 OVERDUE_DAYS = 30
@@ -140,7 +145,7 @@ def _cards(head, rows, right):
     column and the amount on one line, the other columns under it. A row
     whose Days cell is red -- waiting OVERDUE_DAYS or more -- gets a red bar."""
     main = head.index("Party") if "Party" in head else 0
-    amount = max(right) if right and head[max(right)] in ("Amount", "Closing", "Value") else None
+    amount = max(right) if right and head[max(right)] in ("Amount", "Closing", "Value", "Balance") else None
     out = ""
     for r in rows:
         if not any(str(x).strip() for j, x in enumerate(r) if j != main):
@@ -447,6 +452,64 @@ def _stock_report(doc, today):
     return lines, body
 
 
+def _overdue_debtors_report(doc, today):
+    """Debtors whose oldest unpaid bill is DEBTOR_OVERDUE_DAYS or more days
+    old, from the Sundry Debtors as the sync last stored them with each
+    party's oldest bill (sync_tally.py, _add_days_pending): (text lines,
+    html body). Oldest first. Days are counted to the day the email goes,
+    from the bill's date, not as they were at the last sync. "60+ days" is
+    what those old bills add up to -- the part of the balance that is
+    actually that late -- when the sync has stored it; the balance is the
+    party's whole balance in Tally."""
+    debtors = (doc.get("debtors") or {}).get("parties") or []
+    late = []
+    for r in debtors:
+        try:
+            days = (today - datetime.date.fromisoformat(r.get("oldest") or "")).days
+        except ValueError:
+            continue
+        if days >= DEBTOR_OVERDUE_DAYS and (r.get("amount") or 0) > 0.5:
+            late.append(dict(r, days=days))
+    late.sort(key=lambda r: (-r["days"], -(r.get("amount") or 0)))
+    undated = sum(1 for r in debtors if not r.get("oldest") and (r.get("amount") or 0) > 0.5)
+    has_over = all("over_60" in r for r in late)
+    overdue_value = sum((r.get("over_60") if has_over else r.get("amount")) or 0 for r in late)
+    when = ""
+    try:
+        when = datetime.datetime.fromisoformat(doc["as_of"]).astimezone(IST).strftime("%d %b, %I:%M %p")
+    except (KeyError, TypeError, ValueError):
+        pass
+    notes = ["Oldest first. Days = days since the party's oldest unpaid bill in Tally"
+             + (f"; balances read from Tally on {when}." if when else "."),
+             (f"{undated} debtor{' with a balance is' if undated == 1 else 's with a balance are'} not kept "
+              f"bill-by-bill in Tally, so {'it has' if undated == 1 else 'they have'} no bill dates and "
+              f"can't be listed here.") if undated else ""]
+    label = f"{DEBTOR_OVERDUE_DAYS}+ DAYS" if has_over else "THEIR BALANCE"
+
+    lines = [f"Debtors pending {DEBTOR_OVERDUE_DAYS}+ days: {len(late)}",
+             f"{'Amount ' + str(DEBTOR_OVERDUE_DAYS) + '+ days old' if has_over else 'Their balance'}: {inr(overdue_value)}"
+             ] + [n for n in notes if n] + [""]
+    for r in late:
+        lines.append(f"{r['days']:>4} days  since {nice_date(r.get('oldest'))}  {inr(r.get('amount')):>12}  "
+                     + (f"({inr(r.get('over_60'))} 60+ days)  " if has_over else "") + (r.get("name") or ""))
+    if not late:
+        lines.append(f"No debtor has a bill pending {DEBTOR_OVERDUE_DAYS} days or more.")
+
+    tiles = [("DEBTORS", str(len(late)), RED if late else INK), (label, inr(overdue_value), RED if late else INK),
+             ("OLDEST", f"{late[0]['days']} days" if late else "-", RED if late else INK)]
+    body = _tiles(tiles) + "".join(_note(n) for n in notes if n)
+    head = ["Party", "Since", "Days"] + ([f"{DEBTOR_OVERDUE_DAYS}+ days"] if has_over else []) + ["Balance"]
+    right = (2, 3, 4) if has_over else (2, 3)
+    rows = [[_party_cell({"party": r.get("name"), "description": r.get("group") if r.get("group") != "Sundry Debtors" else ""}),
+             _date_cell(r.get("oldest")),
+             f'<span style="font-weight:700;color:{RED}">{r["days"]}d</span>']
+            + ([e(inr(r.get("over_60")))] if has_over else []) + [e(inr(r.get("amount")))] for r in late]
+    if not rows:
+        rows = [[f"No debtor has a bill pending {DEBTOR_OVERDUE_DAYS} days or more."] + [""] * (len(head) - 1)]
+    body += _table(head, rows, right)
+    return lines, body
+
+
 def stock_pdf(doc, today):
     """The stock email's list as a PDF to attach: the same items
     (_stock_rows), below-zero ones first in red, then every item with its
@@ -561,9 +624,10 @@ REPORTS = {
     "proformas": ("Pending Proforma Invoices",
                   lambda rows, today: _pending_report(rows, today, "proforma invoice", with_amount=True)),
     "stock": ("Stock Summary", _stock_report),
+    "debtors": ("Debtors Pending 60+ Days", _overdue_debtors_report),
 }
 DAILY = ["cash", "bank", "purchase", "sales"]
-WEEKLY = ["challans", "proformas", "stock"]
+WEEKLY = ["challans", "proformas", "stock", "debtors"]
 GROUPS = {"daily": DAILY, "weekly": WEEKLY, "all": DAILY}
 
 
@@ -614,6 +678,10 @@ def read_pending(kind):
     the stock one document too (sync_tally.py, _sync_stock)."""
     if kind == "challans":
         return [d.to_dict() for d in _db().collection(CHALLAN_COLLECTION).stream()]
+    if kind == "debtors":
+        snap = _db().collection(PERIOD_COLLECTION).document(PARTY_BALANCES_DOC).get()
+        doc = snap.to_dict() if snap.exists else None
+        return doc if doc and (doc.get("debtors") or {}).get("bills_read") else None
     if kind == "stock":
         snap = _db().collection(PERIOD_COLLECTION).document(STOCK_DOC).get()
         doc = snap.to_dict() if snap.exists else None
