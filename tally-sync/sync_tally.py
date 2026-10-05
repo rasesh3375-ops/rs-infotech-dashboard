@@ -100,6 +100,16 @@ PARTY_BALANCES_DOC = "sundry_balances"
 # read, as one document -- see _sync_stock for how carefully that's done.
 STOCK_DOC = "stock_summary"
 STOCK_MIN_HOURS = 3
+# Off since 5 Oct 2026: Tally on the owner's laptop hung during the first
+# sync that included the new heavier requests, and until its logs show
+# which request did it, the item-wise stock read -- the one with a crash
+# already against it -- stays off. The tile says it hasn't been read.
+STOCK_ENABLED = False
+# Cash and bank balances are asked for only for days this recent. Each
+# ask makes Tally total every ledger up to that day, and a full-year
+# re-sync asking it for all 187 days was part of the load that hung Tally
+# on 5 Oct; the daily emails only ever need yesterday's.
+BALANCE_DAYS = 8
 STOCK_PAUSE_DAYS = 7
 STOCK_TIMEOUT_SECONDS = 120
 
@@ -1324,8 +1334,9 @@ def _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, bank_ledg
         "purchase": _filter_by_class(vouchers, voucher_type_parents, "purchase"),
         "profit_and_loss": fetch_profit_and_loss(date, dump_raw_dir),
         "cash_vouchers": _cash_vouchers_from(vouchers, cash_ledgers),
-        "cash_balance": _balance_for(date, vouchers, cash_ledgers, balance_cache, dump_raw_dir, "cash"),
-        "bank_balance": _balance_for(date, vouchers, bank_ledgers, balance_cache, dump_raw_dir, "bank"),
+        **({"cash_balance": _balance_for(date, vouchers, cash_ledgers, balance_cache, dump_raw_dir, "cash"),
+            "bank_balance": _balance_for(date, vouchers, bank_ledgers, balance_cache, dump_raw_dir, "bank")}
+           if (datetime.date.today() - date).days <= BALANCE_DAYS else {}),
         "bank_vouchers": _bank_vouchers_from(vouchers, bank_ledgers),
     }
     log.info(
@@ -1401,8 +1412,6 @@ def run(date, dry_run=False, dump_raw_dir=None):
         print(f"\n{len(proformas)} Proforma Invoice(s) found (not written, dry run):")
         print(json.dumps(proformas, indent=2, ensure_ascii=False))
         sync_period_reports(date, date, dry_run=True, dump_raw_dir=dump_raw_dir)
-        _sync_party_balances(dry_run=True, dump_raw_dir=dump_raw_dir)
-        _sync_stock(date, payload["profit_and_loss"].get("closing_stock") or None, dry_run=True, dump_raw_dir=dump_raw_dir)
         log.info("Dry run -- nothing written to Firestore.")
         return
 
@@ -1413,8 +1422,11 @@ def run(date, dry_run=False, dump_raw_dir=None):
               "%d pending proforma invoices)",
               FIRESTORE_COLLECTION, date_iso, len(delivery_challans), removed, listed)
     sync_period_reports(date, date, dump_raw_dir=dump_raw_dir)
-    _sync_party_balances(dump_raw_dir=dump_raw_dir)
-    _sync_stock(date, payload["profit_and_loss"].get("closing_stock") or None, dump_raw_dir=dump_raw_dir)
+    # Debtors/Creditors and stock are left to the once-a-day scheduled run
+    # (run_backfill): this one runs for every Sync now press, every change
+    # in Tally and every hour, and those requests make Tally total every
+    # ledger or value every stock item -- too heavy to repeat all day on
+    # the PC people are working in Tally on.
 
 
 def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
@@ -1485,7 +1497,8 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
     _sync_party_balances(dry_run=dry_run, dump_raw_dir=dump_raw_dir)
     # As of today, like the party balances; the backfill's last day is
     # yesterday, so there's no P&L for today at hand to check it against.
-    _sync_stock(datetime.date.today(), None, dry_run=dry_run, dump_raw_dir=dump_raw_dir)
+    if STOCK_ENABLED:
+        _sync_stock(datetime.date.today(), None, dry_run=dry_run, dump_raw_dir=dump_raw_dir)
 
 
 # ---------------------------------------------------------------------------
