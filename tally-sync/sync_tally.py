@@ -1217,7 +1217,22 @@ def fetch_party_balances(date, balances):
     return result
 
 
-def _add_days_pending(result, today, balances, dump_raw_dir=None):
+def _bill_descriptions(vouchers):
+    """{(party, voucher number): what it was for} from the year's vouchers,
+    to say what each pending bill is: a bill's reference in Tally's Bills
+    Receivable is the number of the invoice that raised it. Matched with the
+    party as well, since two voucher series can reuse a number. A bill from
+    before this financial year has no voucher here and goes without."""
+    out = {}
+    for v in vouchers or []:
+        no = _text(v, "VOUCHERNUMBER").strip()
+        party = _text(v, "PARTYLEDGERNAME").strip()
+        if no and party:
+            out.setdefault((party.lower(), no), _voucher_description(v))
+    return out
+
+
+def _add_days_pending(result, today, balances, dump_raw_dir=None, descriptions=None):
     """Adds to each party on the Debtors/Creditors tiles its oldest unpaid
     bill -- "oldest" (YYYY-MM-DD), "days" since it and "bills" pending --
     from Tally's own Bills Receivable / Bills Payable (fetch_bills). On
@@ -1230,7 +1245,12 @@ def _add_days_pending(result, today, balances, dump_raw_dir=None):
     A sub-group's line gets the oldest bill of the parties under it. A
     party Tally doesn't keep bill by bill simply has no days. Never stops
     the sync: a failure leaves the balances without days, and a timeout
-    pauses the balance reads like any other (_GroupBalances)."""
+    pauses the balance reads like any other (_GroupBalances).
+
+    Each debtor also gets "bills_list": every bill it still owes, oldest
+    first, with its number, date, amount and -- from descriptions
+    (_bill_descriptions) -- what the invoice was for. The weekly Debtors
+    Pending 60+ Days email and its PDF list them under each party."""
     if balances.stopped:
         return
     for key, kind in (("debtors", "receivable"), ("creditors", "payable")):
@@ -1246,6 +1266,13 @@ def _add_days_pending(result, today, balances, dump_raw_dir=None):
             log.warning("Bills %s not read -- %s", kind, e)
             continue
         by_party = oldest_bills_by_party(bills, today)
+        owed = {}
+        if key == "debtors":
+            for b in sorted(bills, key=lambda b: b["date"] or "9999"):
+                if b["amount"] > 0.5 and b["date"]:
+                    owed.setdefault(b["party"], []).append({
+                        "party": b["party"], "ref": b["ref"], "date": b["date"], "amount": b["amount"],
+                        "description": (descriptions or {}).get((b["party"].lower(), b["ref"].strip()), "")})
         under = {}
         for party, info in by_party.items():
             parent = _LEDGER_PARENTS.get(party)
@@ -1256,6 +1283,11 @@ def _add_days_pending(result, today, balances, dump_raw_dir=None):
                 u["over_60"] = round(u["over_60"] + info["over_60"], 2)
         dated = 0
         for row in result[key]["parties"]:
+            if owed:
+                # A sub-group's line lists the bills of every party under it.
+                row["bills_list"] = owed.get(row["name"]) or sorted(
+                    (b for party, bs in owed.items() if _LEDGER_PARENTS.get(party) == row["name"] for b in bs),
+                    key=lambda b: b["date"])
             info = by_party.get(row["name"]) or under.get(row["name"])
             if info:
                 row.update(oldest=info["oldest"], bills=info["bills"], over_60=info["over_60"],
@@ -1265,7 +1297,7 @@ def _add_days_pending(result, today, balances, dump_raw_dir=None):
         log.info("Bills %s: %d bills; %d of %d parties dated.", kind, len(bills), dated, len(result[key]["parties"]))
 
 
-def _sync_party_balances(balances, dry_run=False, force=False):
+def _sync_party_balances(balances, dry_run=False, force=False, vouchers=None):
     """Reads and stores today's Sundry Debtors/Creditors: on every daily
     run (force), otherwise at most every PARTY_BALANCES_EVERY_MINUTES.
     A failure is logged and leaves the last stored figures in place -- it
@@ -1279,7 +1311,7 @@ def _sync_party_balances(balances, dry_run=False, force=False):
     except TallyError as e:
         log.warning("Sundry debtors/creditors not read -- %s", e)
         return
-    _add_days_pending(result, datetime.date.today(), balances, balances.dump_raw_dir)
+    _add_days_pending(result, datetime.date.today(), balances, balances.dump_raw_dir, _bill_descriptions(vouchers))
     log.info("Sundry debtors Rs.%s (%d parties) | Sundry creditors Rs.%s (%d parties)",
              result["debtors"]["total"], result["debtors"]["count"],
              result["creditors"]["total"], result["creditors"]["count"])
@@ -1838,7 +1870,7 @@ def run(date, dry_run=False, dump_raw_dir=None):
               "%d pending proforma invoices)",
               FIRESTORE_COLLECTION, date_iso, len(delivery_challans), removed, listed)
     sync_period_reports(date, date, dump_raw_dir=dump_raw_dir)
-    _sync_party_balances(balances)
+    _sync_party_balances(balances, vouchers=all_vouchers)
     # Two Stock Summary requests of 0.1-0.2 s each, and _sync_stock asks at
     # most every STOCK_MIN_HOURS however often this runs.
     if STOCK_ENABLED:
@@ -1911,7 +1943,7 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
               succeeded, day_count, f", {len(failed)} failed ({', '.join(failed)})" if failed else "",
               len(delivery_challans), removed, listed)
     sync_period_reports(from_date, to_date, dry_run=dry_run, dump_raw_dir=dump_raw_dir)
-    _sync_party_balances(balances, dry_run=dry_run, force=True)
+    _sync_party_balances(balances, dry_run=dry_run, force=True, vouchers=all_vouchers)
     # As of today, like the party balances; the backfill's last day is
     # yesterday, so there's no P&L for today at hand to check it against.
     if STOCK_ENABLED:

@@ -453,70 +453,114 @@ def _stock_report(doc, today):
     return lines, body
 
 
-def _overdue_debtors_report(doc, today):
-    """Debtors whose oldest unpaid bill is DEBTOR_OVERDUE_DAYS or more days
-    old, from the Sundry Debtors as the sync last stored them with each
-    party's oldest bill (sync_tally.py, _add_days_pending): (text lines,
-    html body). Oldest first. Days are counted to the day the email goes,
-    from the bill's date, not as they were at the last sync. "60+ days" is
-    what those old bills add up to -- the part of the balance that is
-    actually that late -- when the sync has stored it; the balance is the
-    party's whole balance in Tally."""
-    debtors = (doc.get("debtors") or {}).get("parties") or []
+def _overdue_debtors(doc, today):
+    """The debtors the Monday email is about, oldest first: every debtor
+    whose oldest unpaid bill is DEBTOR_OVERDUE_DAYS or more days old, with
+    "days" counted to today and, when the sync stored the bills
+    (sync_tally.py, _add_days_pending), "late_bills": those of its bills
+    that old, each with its number, date, days, amount and what the invoice
+    was for, and "late_value", what they add up to. Returns (debtors, how
+    many debtors with a balance have no bill dates, whether bills are known)."""
+    parties = (doc.get("debtors") or {}).get("parties") or []
     late = []
-    for r in debtors:
+    for r in parties:
         try:
             days = (today - datetime.date.fromisoformat(r.get("oldest") or "")).days
         except ValueError:
             continue
-        if days >= DEBTOR_OVERDUE_DAYS and (r.get("amount") or 0) > 0.5:
-            late.append(dict(r, days=days))
+        if days < DEBTOR_OVERDUE_DAYS or (r.get("amount") or 0) <= 0.5:
+            continue
+        row = dict(r, days=days)
+        if "bills_list" in r:
+            row["late_bills"] = []
+            for b in r.get("bills_list") or []:
+                try:
+                    bdays = (today - datetime.date.fromisoformat(b.get("date") or "")).days
+                except ValueError:
+                    continue
+                if bdays >= DEBTOR_OVERDUE_DAYS:
+                    row["late_bills"].append(dict(b, days=bdays))
+            row["late_value"] = round(sum(b.get("amount") or 0 for b in row["late_bills"]), 2)
+        else:
+            row["late_value"] = r.get("over_60") if "over_60" in r else None
+        late.append(row)
     late.sort(key=lambda r: (-r["days"], -(r.get("amount") or 0)))
-    undated = sum(1 for r in debtors if not r.get("oldest") and (r.get("amount") or 0) > 0.5)
-    has_over = all("over_60" in r for r in late)
-    overdue_value = sum((r.get("over_60") if has_over else r.get("amount")) or 0 for r in late)
+    undated = sum(1 for r in parties if not r.get("oldest") and (r.get("amount") or 0) > 0.5)
+    return late, undated, bool(late) and all("late_bills" in r for r in late)
+
+
+def _overdue_debtors_report(doc, today):
+    """Debtors pending DEBTOR_OVERDUE_DAYS+ days (_overdue_debtors): (text
+    lines, html body). Each debtor is a line of its own -- its whole
+    balance in Tally and how much of it is that late -- followed by those
+    late bills, each with its number, date, days, amount and what it was
+    for, so the follow-up call can name the invoice."""
+    late, undated, with_bills = _overdue_debtors(doc, today)
+    known = all(r.get("late_value") is not None for r in late)
+    late_total = sum((r["late_value"] if known else r.get("amount")) or 0 for r in late)
     when = ""
     try:
         when = datetime.datetime.fromisoformat(doc["as_of"]).astimezone(IST).strftime("%d %b, %I:%M %p")
     except (KeyError, TypeError, ValueError):
         pass
-    notes = ["Oldest first. Days = days since the party's oldest unpaid bill in Tally"
-             + (f"; balances read from Tally on {when}." if when else "."),
+    notes = ["Oldest first. Days = days since the bill's date in Tally"
+             + (f"; read from Tally on {when}." if when else "."),
              (f"{undated} debtor{' with a balance is' if undated == 1 else 's with a balance are'} not kept "
               f"bill-by-bill in Tally, so {'it has' if undated == 1 else 'they have'} no bill dates and "
               f"can't be listed here.") if undated else ""]
-    label = f"{DEBTOR_OVERDUE_DAYS}+ DAYS" if has_over else "THEIR BALANCE"
 
     lines = [f"Debtors pending {DEBTOR_OVERDUE_DAYS}+ days: {len(late)}",
-             f"{'Amount ' + str(DEBTOR_OVERDUE_DAYS) + '+ days old' if has_over else 'Their balance'}: {inr(overdue_value)}"
+             f"{'Amount ' + str(DEBTOR_OVERDUE_DAYS) + '+ days old' if known else 'Their balance'}: {inr(late_total)}"
              ] + [n for n in notes if n] + [""]
     for r in late:
-        lines.append(f"{r['days']:>4} days  since {nice_date(r.get('oldest'))}  {inr(r.get('amount')):>12}  "
-                     + (f"({inr(r.get('over_60'))} 60+ days)  " if has_over else "") + (r.get("name") or ""))
+        lines.append(f"{r.get('name')} -- balance {inr(r.get('amount'))}"
+                     + (f", {inr(r['late_value'])} pending {DEBTOR_OVERDUE_DAYS}+ days" if known else "")
+                     + f", oldest {r['days']} days")
+        for b in r.get("late_bills") or []:
+            lines.append(f"    {b.get('ref') or '':<12} {nice_date(b.get('date')):<11} {b['days']:>4}d "
+                         f"{inr(b.get('amount')):>12}  {b.get('description') or ''}")
     if not late:
         lines.append(f"No debtor has a bill pending {DEBTOR_OVERDUE_DAYS} days or more.")
 
-    tiles = [("DEBTORS", str(len(late)), RED if late else INK), (label, inr(overdue_value), RED if late else INK),
+    tiles = [("DEBTORS", str(len(late)), RED if late else INK),
+             (f"{DEBTOR_OVERDUE_DAYS}+ DAYS" if known else "THEIR BALANCE", inr(late_total), RED if late else INK),
              ("OLDEST", f"{late[0]['days']} days" if late else "-", RED if late else INK)]
     body = _tiles(tiles) + "".join(_note(n) for n in notes if n)
-    head = ["Party", "Since", "Days"] + ([f"{DEBTOR_OVERDUE_DAYS}+ days"] if has_over else []) + ["Balance"]
-    right = (2, 3, 4) if has_over else (2, 3)
-    rows = [[_party_cell({"party": r.get("name"), "description": r.get("group") if r.get("group") != "Sundry Debtors" else ""}),
-             _date_cell(r.get("oldest")),
-             f'<span style="font-weight:700;color:{RED}">{r["days"]}d</span>']
-            + ([e(inr(r.get("over_60")))] if has_over else []) + [e(inr(r.get("amount")))] for r in late]
+    if with_bills:
+        head, right = ["Party / what the bill was for", "Bill No", "Date", "Days", "Amount"], (3, 4)
+        rows = []
+        for r in late:
+            group = r.get("group") if r.get("group") not in ("Sundry Debtors", "Sub-group") else ""
+            rows.append([f'<div style="font-weight:700;font-size:14px">{e(r.get("name") or "")}</div>'
+                         f'<div style="color:{DIM};font-size:12px">Balance {e(inr(r.get("amount")))}'
+                         f'{" · " + e(group) if group else ""}</div>', "", "", "",
+                         f'<span style="font-weight:700;color:{RED}">{e(inr(r["late_value"]))}</span>'])
+            for b in r["late_bills"]:
+                rows.append([f'<span style="color:{DIM}">{e(b.get("description") or "-")}</span>',
+                             e(b.get("ref") or ""), _date_cell(b.get("date")),
+                             f'<span style="font-weight:700;color:{RED}">{b["days"]}d</span>',
+                             e(inr(b.get("amount")))])
+    else:
+        head = ["Party", "Since", "Days"] + ([f"{DEBTOR_OVERDUE_DAYS}+ days"] if known else []) + ["Balance"]
+        right = (2, 3, 4) if known else (2, 3)
+        rows = [[_party_cell({"party": r.get("name"), "description": r.get("group") if r.get("group") != "Sundry Debtors" else ""}),
+                 _date_cell(r.get("oldest")), f'<span style="font-weight:700;color:{RED}">{r["days"]}d</span>']
+                + ([e(inr(r.get("late_value")))] if known else []) + [e(inr(r.get("amount")))] for r in late]
     if not rows:
         rows = [[f"No debtor has a bill pending {DEBTOR_OVERDUE_DAYS} days or more."] + [""] * (len(head) - 1)]
     body += _table(head, rows, right)
     return lines, body
 
 
-def stock_pdf(doc, today):
-    """The stock email's list as a PDF to attach: the same items
-    (_stock_rows), below-zero ones first in red, then every item with its
-    category, quantity, rate and value, with the total -- A4, page numbers
-    on every page. The rupee sign needs a font that has it; DejaVu Sans is
-    on GitHub's Ubuntu runners, and without it amounts read "Rs." instead."""
+def _pdf(title, today, summary, sections, footer_name):
+    """A4 PDF of one or more tables, for the weekly emails to attach. Each
+    section is a dict: heading (and heading_red), header, rows (lists of
+    plain text), widths in mm, right_from (the first right-aligned
+    column), wrap (columns that wrap), red (row indexes in red), bold (row
+    indexes in bold, shaded -- a party's own line), total (a last row, or
+    None). Page numbers on every page. The rupee sign needs a font that has
+    it; DejaVu Sans is on GitHub's Ubuntu runners, and without it amounts
+    read "Rs." instead."""
     import io
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -527,87 +571,141 @@ def stock_pdf(doc, today):
     from reportlab.pdfbase.ttfonts import TTFont
 
     font, bold, rupee = "Helvetica", "Helvetica-Bold", "Rs."
-    for regular, heavy in (("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),):
-        try:
-            pdfmetrics.registerFont(TTFont("Body", regular))
-            pdfmetrics.registerFont(TTFont("BodyBold", heavy))
-            font, bold, rupee = "Body", "BodyBold", "₹"
-        except Exception:
-            pass
-    money = lambda n: inr(n).replace("₹", rupee)
-    rate = lambda t: _rate(t).replace("₹", rupee)
-
-    by_group = doc.get("level") == "group"
-    items, negative, left_out = _stock_rows(doc)
+    try:
+        pdfmetrics.registerFont(TTFont("Body", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
+        pdfmetrics.registerFont(TTFont("BodyBold", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"))
+        font, bold, rupee = "Body", "BodyBold", "₹"
+    except Exception:
+        pass
+    fix = lambda t: (t or "").replace("₹", rupee)
     navy, red, dim = colors.HexColor(NAVY), colors.HexColor(RED), colors.HexColor(DIM)
     small = ParagraphStyle("small", fontName=font, fontSize=8.5, leading=10.5)
+    small_bold = ParagraphStyle("smallb", parent=small, fontName=bold, fontSize=9)
     head_style = ParagraphStyle("h", fontName=bold, fontSize=16, leading=20, textColor=colors.HexColor(INK))
     sub = ParagraphStyle("s", fontName=font, fontSize=9.5, leading=13, textColor=dim)
-    section = ParagraphStyle("sec", fontName=bold, fontSize=11, leading=15, spaceBefore=8, spaceAfter=3)
+    section_style = ParagraphStyle("sec", fontName=bold, fontSize=11, leading=15, spaceBefore=8, spaceAfter=3)
 
-    if by_group:
-        header, widths, right_from = ["Stock group", "Quantity", "Value"], [100 * mm, 35 * mm, 45 * mm], 1
-        cells = lambda r: [Paragraph(e(r.get("name") or ""), small), r.get("qty_text") or "", money(r.get("value"))]
-    else:
-        header, widths, right_from = ["Item", "Category", "Quantity", "Rate", "Value"], \
-            [78 * mm, 22 * mm, 22 * mm, 28 * mm, 30 * mm], 2
-        cells = lambda r: [Paragraph(e(r.get("name") or ""), small), Paragraph(e(r.get("group") or ""), small),
-                           r.get("qty_text") or "", rate(r.get("rate_text")), money(r.get("value"))]
-
-    def table(rows, with_total=False):
-        data = [header] + [cells(r) for r in rows]
-        if with_total:
-            data.append(["Total"] + [""] * (len(header) - 2) + [money(doc.get("total_value") or 0)])
-        t = Table(data, colWidths=widths, repeatRows=1)
+    def table(sec):
+        bold_rows = set(sec.get("bold") or ())
+        data = [sec["header"]]
+        for i, r in enumerate(sec["rows"], start=1):
+            data.append([Paragraph(e(fix(c)), small_bold if i in bold_rows else small) if j in sec.get("wrap", ())
+                         else fix(c) for j, c in enumerate(r)])
+        if sec.get("total"):
+            data.append([fix(c) for c in sec["total"]])
+        t = Table(data, colWidths=[w * mm for w in sec["widths"]], repeatRows=1)
         style = [("FONT", (0, 0), (-1, -1), font, 8.5), ("FONT", (0, 0), (-1, 0), bold, 8.5),
                  ("BACKGROUND", (0, 0), (-1, 0), navy), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                 ("ALIGN", (right_from, 0), (-1, -1), "RIGHT"), ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                 ("ALIGN", (sec["right_from"], 0), (-1, -1), "RIGHT"), ("VALIGN", (0, 0), (-1, -1), "TOP"),
                  ("LINEBELOW", (0, 1), (-1, -1), 0.25, colors.HexColor(LINE)),
                  ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]
-        for i, r in enumerate(rows, start=1):
-            if i % 2 == 0:
+        for i in range(1, len(sec["rows"]) + 1):
+            if i in bold_rows:
+                style += [("BACKGROUND", (0, i), (-1, i), colors.HexColor("#e8edf5")), ("FONT", (0, i), (-1, i), bold, 9)]
+            elif not bold_rows and i % 2 == 0:
                 style.append(("BACKGROUND", (0, i), (-1, i), colors.HexColor(ZEBRA)))
-            if r in negative:
-                style.append(("TEXTCOLOR", (right_from, i), (-1, i), red))
-        if with_total:
+            if i in set(sec.get("red") or ()):
+                style.append(("TEXTCOLOR", (sec["right_from"], i), (-1, i), red))
+        if sec.get("total"):
             style += [("FONT", (0, -1), (-1, -1), bold, 9), ("LINEABOVE", (0, -1), (-1, -1), 1, navy)]
         t.setStyle(TableStyle(style))
         return t
 
-    when = ""
-    try:
-        when = datetime.datetime.fromisoformat(doc["as_of"]).astimezone(IST).strftime("%d %b %Y, %I:%M %p")
-    except (KeyError, TypeError, ValueError):
-        pass
-    noun = "group" if by_group else "item"
-    story = [Paragraph("R. S. Infotech – Stock Summary", head_style),
-             Paragraph(f"As on {today:%A, %d %b %Y}" + (f" &middot; read from Tally {when}" if when else ""), sub),
-             Spacer(1, 4),
-             Paragraph(f"<b>Stock value {money(doc.get('total_value') or 0)}</b> &middot; {len(items)} {noun}s in stock"
-                       f" &middot; {len(negative)} below zero"
-                       + (f" &middot; {left_out} with no stock or no value not listed" if left_out else ""), sub)]
-    if doc.get("matches") is False:
-        story.append(Paragraph(f"Tally's P&amp;L closing stock is {money(doc.get('pl_closing_stock'))} -- check in Tally.",
-                               ParagraphStyle("w", parent=sub, textColor=red)))
-    if negative:
-        story += [Paragraph("Below zero – check these in Tally", ParagraphStyle("n", parent=section, textColor=red)),
-                  table(negative)]
-    story += [Paragraph(f"All {noun}s in stock", section), table(items, with_total=True)]
+    story = [Paragraph(e(f"R. S. Infotech – {title}"), head_style)]
+    story += [Paragraph(fix(line), sub) for line in summary]
+    for sec in sections:
+        if sec.get("heading"):
+            story.append(Paragraph(e(sec["heading"]), ParagraphStyle("hh", parent=section_style,
+                                                                    textColor=red if sec.get("heading_red") else colors.HexColor(INK))))
+        else:
+            story.append(Spacer(1, 6))
+        story.append(table(sec))
 
     def footer(canvas, d):
         canvas.saveState()
         canvas.setFont(font, 7.5)
         canvas.setFillColor(dim)
-        canvas.drawString(15 * mm, 10 * mm, f"R. S. Infotech – Stock Summary as on {today:%d %b %Y}")
+        canvas.drawString(15 * mm, 10 * mm, f"R. S. Infotech – {footer_name} as on {today:%d %b %Y}")
         canvas.drawRightString(A4[0] - 15 * mm, 10 * mm, f"Page {d.page}")
         canvas.restoreState()
 
     out = io.BytesIO()
     SimpleDocTemplate(out, pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm, topMargin=14 * mm,
-                      bottomMargin=16 * mm, title=f"Stock Summary {today:%d %b %Y}",
+                      bottomMargin=16 * mm, title=f"{title} {today:%d %b %Y}",
                       author="R. S. Infotech").build(story, onFirstPage=footer, onLaterPages=footer)
     return out.getvalue()
+
+
+def stock_pdf(doc, today):
+    """The stock email's list as a PDF: the same items (_stock_rows),
+    below-zero ones first in red, then every item with its category,
+    quantity, rate and value, and the total."""
+    by_group = doc.get("level") == "group"
+    items, negative, left_out = _stock_rows(doc)
+    noun = "group" if by_group else "item"
+    if by_group:
+        header, widths, right_from = ["Stock group", "Quantity", "Value"], [100, 35, 45], 1
+        cells = lambda r: [r.get("name") or "", r.get("qty_text") or "", inr(r.get("value"))]
+    else:
+        header, widths, right_from = ["Item", "Category", "Quantity", "Rate", "Value"], [78, 22, 22, 28, 30], 2
+        cells = lambda r: [r.get("name") or "", r.get("group") or "", r.get("qty_text") or "",
+                           _rate(r.get("rate_text")), inr(r.get("value"))]
+    when = ""
+    try:
+        when = datetime.datetime.fromisoformat(doc["as_of"]).astimezone(IST).strftime("%d %b %Y, %I:%M %p")
+    except (KeyError, TypeError, ValueError):
+        pass
+    summary = [f"As on {today:%A, %d %b %Y}" + (f" · read from Tally {when}" if when else ""),
+               f"Stock value {inr(doc.get('total_value') or 0)} · {len(items)} {noun}s in stock · "
+               f"{len(negative)} below zero" + (f" · {left_out} with no stock or no value not listed" if left_out else "")]
+    if doc.get("matches") is False:
+        summary.append(f"Tally's P&L closing stock is {inr(doc.get('pl_closing_stock'))} – check in Tally.")
+    wrap = (0, 1) if not by_group else (0,)
+    sections = []
+    if negative:
+        sections.append(dict(heading="Below zero – check these in Tally", heading_red=True, header=header,
+                             rows=[cells(r) for r in negative], widths=widths, right_from=right_from, wrap=wrap,
+                             red=range(1, len(negative) + 1)))
+    sections.append(dict(heading=f"All {noun}s in stock", header=header, rows=[cells(r) for r in items],
+                         widths=widths, right_from=right_from, wrap=wrap,
+                         red=[i for i, r in enumerate(items, start=1) if r in negative],
+                         total=["Total"] + [""] * (len(header) - 2) + [inr(doc.get("total_value") or 0)]))
+    return _pdf("Stock Summary", today, summary, sections, "Stock Summary")
+
+
+def debtors_pdf(doc, today):
+    """The Monday debtors email as a PDF: each debtor pending
+    DEBTOR_OVERDUE_DAYS+ days on a shaded line of its own, with its late
+    bills under it -- number, date, days, amount and what it was for."""
+    late, undated, with_bills = _overdue_debtors(doc, today)
+    known = all(r.get("late_value") is not None for r in late)
+    total = sum((r["late_value"] if known else r.get("amount")) or 0 for r in late)
+    summary = [f"As on {today:%A, %d %b %Y} · oldest first · days since the bill's date in Tally",
+               f"{len(late)} debtors · {inr(total)} {'pending ' + str(DEBTOR_OVERDUE_DAYS) + '+ days' if known else 'balance'}"
+               + (f" · oldest {late[0]['days']} days" if late else "")]
+    if undated:
+        summary.append(f"{undated} debtor{'' if undated == 1 else 's'} with a balance not kept bill-by-bill in Tally "
+                       f"can't be listed (no bill dates).")
+    if with_bills:
+        header, widths, rows, bold = ["Party / what the bill was for", "Bill No", "Date", "Days", "Amount"], \
+            [92, 24, 24, 14, 26], [], []
+        for r in late:
+            rows.append([f"{r.get('name') or ''}  (balance {inr(r.get('amount'))})", "", "", f"{r['days']}d",
+                         inr(r["late_value"])])
+            bold.append(len(rows))
+            for b in r["late_bills"]:
+                rows.append([b.get("description") or "-", b.get("ref") or "", nice_date(b.get("date")),
+                             f"{b['days']}d", inr(b.get("amount"))])
+        sec = dict(header=header, rows=rows, widths=widths, right_from=3, wrap=(0,), bold=bold,
+                   total=["Total pending " + str(DEBTOR_OVERDUE_DAYS) + "+ days", "", "", "", inr(total)])
+    else:
+        header = ["Party", "Since", "Days"] + ([f"{DEBTOR_OVERDUE_DAYS}+ days"] if known else []) + ["Balance"]
+        rows = [[r.get("name") or "", nice_date(r.get("oldest")), f"{r['days']}d"]
+                + ([inr(r.get("late_value"))] if known else []) + [inr(r.get("amount"))] for r in late]
+        sec = dict(header=header, rows=rows, widths=[80, 28, 18, 27, 27] if known else [95, 30, 20, 35],
+                   right_from=2, wrap=(0,))
+    return _pdf(f"Debtors Pending {DEBTOR_OVERDUE_DAYS}+ Days", today, summary, [sec],
+                f"Debtors Pending {DEBTOR_OVERDUE_DAYS}+ Days")
 
 
 # Every report: its email subject's name, whether it's a daily report of
@@ -750,6 +848,9 @@ def main():
             subject, text, html_body = build_email(kind, today, listed)
             if kind == "stock" and listed:
                 attachments.append((f"Stock Summary {today:%d %b %Y}.pdf", stock_pdf(listed, today)))
+            if kind == "debtors" and listed:
+                attachments.append((f"Debtors Pending {DEBTOR_OVERDUE_DAYS}+ Days {today:%d %b %Y}.pdf",
+                                    debtors_pdf(listed, today)))
         else:
             subject, text, html_body = build_email(kind, day, report)
         if dry_run:
