@@ -57,12 +57,16 @@ Write-Host "Windows user: $env:USERDOMAIN\$env:USERNAME"
 Step 'Checking the Firebase key (service-account.json)'
 $keySource = Join-Path $SourceDir 'service-account.json'
 if (-not (Test-Path $keySource)) {
-    # A key downloaded fresh from the Firebase console keeps its own name
-    # (rs-infotech-dashboard-firebase-adminsdk-....json), and renaming it
-    # goes wrong when Windows hides extensions (service-account.json.json),
-    # so the newest such file next to this one is used as it is.
-    $found = Get-ChildItem -Path $SourceDir -Filter '*firebase-adminsdk*.json' -ErrorAction SilentlyContinue |
-             Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    # A key downloaded fresh keeps its own name -- from the Firebase console
+    # rs-infotech-dashboard-firebase-adminsdk-....json, from Google Cloud's
+    # restricted sync account rs-infotech-dashboard-1a2b3c....json -- and
+    # renaming it goes wrong when Windows hides extensions
+    # (service-account.json.json), so the newest file next to this one that
+    # is a key for this project is used as it is, whatever it's called.
+    $found = Get-ChildItem -Path $SourceDir -Filter '*.json' -ErrorAction SilentlyContinue |
+             Sort-Object LastWriteTime -Descending | Where-Object {
+                 try { $k = Get-Content $_.FullName -Raw | ConvertFrom-Json; $k.type -eq 'service_account' -and $k.project_id -eq 'rs-infotech-dashboard' }
+                 catch { $false } } | Select-Object -First 1
     if ($found) { $keySource = $found.FullName }
 }
 if (-not (Test-Path $keySource)) {
