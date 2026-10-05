@@ -8,10 +8,11 @@ figures the Tally sync has already stored in Firestore (daily_reports):
   Daily Purchase Entries    purchases before and with GST, every entry
   Daily Sales Entries       sales before and with GST, every entry
 
-and every Saturday, two more:
+and every Saturday, three more:
 
   Pending Delivery Challans   every Delivery Note still in Tally, oldest first
   Pending Proforma Invoices   every Proforma Invoice still in Tally, oldest first
+  Stock Summary               every item in stock, as on the Stock tile
 
 Each email's subject is its report name and the date, nothing else, so the
 four sort and search cleanly in the inbox.
@@ -31,7 +32,7 @@ repository is public:
 Usage:
   python daily_report_emails.py                        # the four daily ones, for yesterday (India time)
   python daily_report_emails.py 2026-10-03             # the four daily ones, for a given day
-  python daily_report_emails.py --report=weekly        # the two pending lists, as they stand now
+  python daily_report_emails.py --report=weekly        # the two pending lists and the stock, as they stand now
   python daily_report_emails.py --report=cash,bank     # only some of them
   python daily_report_emails.py --dry-run              # print them, send nothing
 """
@@ -40,6 +41,7 @@ import datetime
 import html
 import json
 import os
+import re
 import smtplib
 import sys
 from email.message import EmailMessage
@@ -51,6 +53,7 @@ COLLECTION = "daily_reports"
 CHALLAN_COLLECTION = "delivery_challans"
 PERIOD_COLLECTION = "period_reports"
 PENDING_PROFORMA_DOC = "pending_proforma_invoices"
+STOCK_DOC = "stock_summary"
 # A pending item at least this old is counted out separately, so the ones
 # that have been waiting a month stand out from this week's.
 OVERDUE_DAYS = 30
@@ -137,7 +140,7 @@ def _cards(head, rows, right):
     column and the amount on one line, the other columns under it. A row
     whose Days cell is red -- waiting OVERDUE_DAYS or more -- gets a red bar."""
     main = head.index("Party") if "Party" in head else 0
-    amount = max(right) if right and head[max(right)] in ("Amount", "Closing") else None
+    amount = max(right) if right and head[max(right)] in ("Amount", "Closing", "Value") else None
     out = ""
     for r in rows:
         if not any(str(x).strip() for j, x in enumerate(r) if j != main):
@@ -149,7 +152,7 @@ def _cards(head, rows, right):
                 continue
             if head[j] == "Days":
                 meta.append(x.replace("d</span>", " days</span>"))
-            elif head[j] in ("", "Type", "Date", "Bank"):
+            elif head[j] in ("", "Type", "Date", "Bank", "Category", "Quantity"):
                 meta.append(x)
             else:
                 meta.append(f"{e(head[j])} {x}")
@@ -358,6 +361,75 @@ def _pending_report(rows, today, noun, with_amount):
     return lines, body
 
 
+def _rate(text):
+    """A stock rate as Tally sends it ("3830.66", or "50000.00/Nos") with
+    the same Indian grouping as every other figure, paise kept."""
+    m = re.match(r"\s*(-?[\d,]*\.?\d+)(.*)$", text or "")
+    if not m:
+        return text or ""
+    n = float(m.group(1).replace(",", ""))
+    whole, paise = f"{abs(n):.2f}".split(".")
+    return inr(-int(whole) if n < 0 else int(whole)) + "." + paise + m.group(2)
+
+
+def _stock_qty(r):
+    m = re.match(r"\s*(-?[\d,]*\.?\d+)", r.get("qty_text") or "")
+    return float(m.group(1).replace(",", "")) if m else float(r.get("qty") or 0)
+
+
+def _stock_report(doc, today):
+    """The stock as the sync last read it from Tally's Stock Category
+    Summary (sync_tally.py, _sync_stock): (text lines, html body). Items
+    with nil quantity and value are left out, as on the dashboard's Stock
+    tile; items below zero -- sold or issued before the purchase was
+    entered -- are listed first, so they get looked at."""
+    by_group = doc.get("level") == "group"
+    items = [r for r in (doc.get("items") or []) if not (_stock_qty(r) == 0 and abs(r.get("value") or 0) < 0.5)]
+    negative = [r for r in items if (r.get("value") or 0) < -0.5 or _stock_qty(r) < 0]
+    total = doc.get("total_value") or 0
+    noun = "group" if by_group else "item"
+    when = ""
+    try:
+        when = datetime.datetime.fromisoformat(doc["as_of"]).astimezone(IST).strftime("%d %b, %I:%M %p")
+    except (KeyError, TypeError, ValueError):
+        pass
+    notes = [f"Read from Tally on {when}." if when else ""]
+    if doc.get("matches") is False:
+        notes.append(f"Tally's P&L closing stock is {inr(doc.get('pl_closing_stock'))} -- check in Tally.")
+    if doc.get("error"):
+        notes.append(f"The latest read from Tally failed ({doc['error']}); these are the last figures read.")
+
+    lines = [f"Stock value: {inr(total)}", f"{noun.capitalize()}s in stock: {len(items)}",
+             f"Below zero: {len(negative)}"] + [n for n in notes if n] + [""]
+    for r in negative + [r for r in items if r not in negative]:
+        lines.append(f"{inr(r.get('value')):>12}  {r.get('qty_text') or '':>9}  {r.get('name') or ''}"
+                     + (f" [{r['group']}]" if not by_group and r.get("group") else ""))
+    if not items:
+        lines.append("Nothing in stock.")
+
+    tiles = [("STOCK VALUE", inr(total), INK), (f"{noun.upper()}S IN STOCK", str(len(items)), INK),
+             ("BELOW ZERO", str(len(negative)), RED if negative else INK)]
+    body = _tiles(tiles) + "".join(_note(n, warn="check" in n or "failed" in n) for n in notes if n)
+
+    def red(r, x):
+        return f'<span style="color:{RED}">{x}</span>' if r in negative else x
+    if by_group:
+        head, right = ["Stock group", "Quantity", "Value"], (1, 2)
+        row = lambda r: [f"<b>{e(r.get('name') or '')}</b>", red(r, e(r.get("qty_text") or "")),
+                         red(r, e(inr(r.get("value"))))]
+    else:
+        head, right = ["Item", "Category", "Quantity", "Rate", "Value"], (2, 3, 4)
+        row = lambda r: [f"<b>{e(r.get('name') or '')}</b>", e(r.get("group") or ""),
+                         red(r, e(r.get("qty_text") or "")), e(_rate(r.get("rate_text"))),
+                         red(r, e(inr(r.get("value"))))]
+    if negative:
+        body += (f'<div style="font-size:14px;font-weight:700;color:{RED};margin:14px 0 2px">'
+                 f'Below zero -- check these in Tally</div>') + _table(head, [row(r) for r in negative], right)
+        body += f'<div style="font-size:14px;font-weight:700;color:{INK};margin:14px 0 2px">All {noun}s in stock</div>'
+    body += _table(head, [row(r) for r in items] or [["Nothing in stock."] + [""] * (len(head) - 1)], right)
+    return lines, body
+
+
 # Every report: its email subject's name, whether it's a daily report of
 # one day (reads that day's daily_reports document) or a list as it stands
 # now, and how to build it.
@@ -372,9 +444,10 @@ REPORTS = {
                  lambda rows, today: _pending_report(rows, today, "delivery challan", with_amount=False)),
     "proformas": ("Pending Proforma Invoices",
                   lambda rows, today: _pending_report(rows, today, "proforma invoice", with_amount=True)),
+    "stock": ("Stock Summary", _stock_report),
 }
 DAILY = ["cash", "bank", "purchase", "sales"]
-WEEKLY = ["challans", "proformas"]
+WEEKLY = ["challans", "proformas", "stock"]
 GROUPS = {"daily": DAILY, "weekly": WEEKLY, "all": DAILY}
 
 
@@ -421,9 +494,14 @@ def _db():
 def read_pending(kind):
     """The pending list as the sync last left it, or None if it never ran.
     Delivery Challans are one document each; the Proforma list is one
-    document holding them all (sync_tally.py, push_pending_proformas)."""
+    document holding them all (sync_tally.py, push_pending_proformas), and
+    the stock one document too (sync_tally.py, _sync_stock)."""
     if kind == "challans":
         return [d.to_dict() for d in _db().collection(CHALLAN_COLLECTION).stream()]
+    if kind == "stock":
+        snap = _db().collection(PERIOD_COLLECTION).document(STOCK_DOC).get()
+        doc = snap.to_dict() if snap.exists else None
+        return doc if doc and doc.get("as_of") else None
     snap = _db().collection(PERIOD_COLLECTION).document(PENDING_PROFORMA_DOC).get()
     return (snap.to_dict() or {}).get("proformas") or [] if snap.exists else None
 
