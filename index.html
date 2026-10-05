@@ -1096,15 +1096,17 @@ function detachStockListener(){
   if (stockUnsubscribe){ stockUnsubscribe(); stockUnsubscribe = null; }
 }
 
-// An item whose quantity is nil -- sold out, nothing in hand -- is left out
-// of the list, as the owner asked. One with a quantity but no value (in
-// stock, never given a purchase rate in Tally) stays: the units are there.
+// Listed: an item with a value, or with a quantity below zero (to be
+// checked in Tally). Left out, as the owner asked: items with nothing in
+// stock and, since 5 Oct, items held at no value -- dozens of licences at
+// Rs.0 filled the first stock email. The same rule as the stock email and
+// its PDF (daily_report_emails.py, _stock_rows).
 const stockQty = (r) => {
   if (r.qty != null) return Number(r.qty) || 0;
   const m = /^\s*(-?[\d,]*\.?\d+)/.exec(r.qty_text || '');
   return m ? Number(m[1].replace(/,/g, '')) || 0 : 0;
 };
-const isNilStock = (r) => stockQty(r) === 0 && Math.abs(r.value || 0) < 0.5;
+const isNilStock = (r) => Math.abs(r.value || 0) < 0.5 && stockQty(r) >= 0;
 
 function renderStock(d){
   const allItems = (d && d.items) || [];

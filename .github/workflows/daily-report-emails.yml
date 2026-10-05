@@ -37,7 +37,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install --quiet firebase-admin
+      - run: pip install --quiet firebase-admin reportlab
       # The inputs go in through environment variables, not pasted into the
       # command, so nothing typed into them can run as a shell command.
       - run: python .github/scripts/daily_report_emails.py "$SEND_DATE" "--report=${SEND_REPORT:-daily}"

@@ -184,8 +184,13 @@ def _table(head, rows, right=()):
             for i, x in enumerate(r)) + "</tr>"
     return (f'<table class="desk" role="presentation" width="100%" cellpadding="0" cellspacing="0" '
             f'style="border-collapse:collapse;margin:6px 0 14px"><tr>{th}</tr>{body}</table>'
-            f'<div class="mob" style="display:none;max-height:0;overflow:hidden;mso-hide:all;margin:6px 0 14px">'
-            f'{_cards(head, rows, right)}</div>')
+            # Desktop Outlook ignores display:none on the tables inside a
+            # hidden <div>, so on 5 Oct it showed every stock item twice:
+            # the table, then the phone blocks. The conditional comment
+            # keeps the blocks out of Outlook altogether; every other
+            # client reads straight through it.
+            f'<!--[if !mso]><!--><div class="mob" style="display:none;max-height:0;overflow:hidden;margin:6px 0 14px">'
+            f'{_cards(head, rows, right)}</div><!--<![endif]-->')
 
 
 def _party_cell(v):
@@ -377,15 +382,26 @@ def _stock_qty(r):
     return float(m.group(1).replace(",", "")) if m else float(r.get("qty") or 0)
 
 
+def _stock_rows(doc):
+    """(items, below_zero, left_out) as the stock email, its PDF and the
+    dashboard's Stock tile list them: an item is listed when it has a value,
+    or a quantity below zero. Left out are items with nothing in stock and
+    -- as the owner asked on 5 Oct, after the first email listed dozens of
+    licences at Rs.0 -- items held at no value in Tally."""
+    every = doc.get("items") or []
+    items = [r for r in every if abs(r.get("value") or 0) >= 0.5 or _stock_qty(r) < 0]
+    negative = [r for r in items if (r.get("value") or 0) < -0.5 or _stock_qty(r) < 0]
+    return items, negative, len(every) - len(items)
+
+
 def _stock_report(doc, today):
     """The stock as the sync last read it from Tally's Stock Category
     Summary (sync_tally.py, _sync_stock): (text lines, html body). Items
-    with nil quantity and value are left out, as on the dashboard's Stock
-    tile; items below zero -- sold or issued before the purchase was
+    with no stock or no value are left out (_stock_rows), as on the
+    dashboard's Stock tile; items below zero -- sold or issued before the purchase was
     entered -- are listed first, so they get looked at."""
     by_group = doc.get("level") == "group"
-    items = [r for r in (doc.get("items") or []) if not (_stock_qty(r) == 0 and abs(r.get("value") or 0) < 0.5)]
-    negative = [r for r in items if (r.get("value") or 0) < -0.5 or _stock_qty(r) < 0]
+    items, negative, left_out = _stock_rows(doc)
     total = doc.get("total_value") or 0
     noun = "group" if by_group else "item"
     when = ""
@@ -393,7 +409,8 @@ def _stock_report(doc, today):
         when = datetime.datetime.fromisoformat(doc["as_of"]).astimezone(IST).strftime("%d %b, %I:%M %p")
     except (KeyError, TypeError, ValueError):
         pass
-    notes = [f"Read from Tally on {when}." if when else ""]
+    notes = [(f"Read from Tally on {when}." if when else "")
+             + (f" {left_out} {noun}s with no stock or no value aren't listed." if left_out else "")]
     if doc.get("matches") is False:
         notes.append(f"Tally's P&L closing stock is {inr(doc.get('pl_closing_stock'))} -- check in Tally.")
     if doc.get("error"):
@@ -428,6 +445,105 @@ def _stock_report(doc, today):
         body += f'<div style="font-size:14px;font-weight:700;color:{INK};margin:14px 0 2px">All {noun}s in stock</div>'
     body += _table(head, [row(r) for r in items] or [["Nothing in stock."] + [""] * (len(head) - 1)], right)
     return lines, body
+
+
+def stock_pdf(doc, today):
+    """The stock email's list as a PDF to attach: the same items
+    (_stock_rows), below-zero ones first in red, then every item with its
+    category, quantity, rate and value, with the total -- A4, page numbers
+    on every page. The rupee sign needs a font that has it; DejaVu Sans is
+    on GitHub's Ubuntu runners, and without it amounts read "Rs." instead."""
+    import io
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    font, bold, rupee = "Helvetica", "Helvetica-Bold", "Rs."
+    for regular, heavy in (("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),):
+        try:
+            pdfmetrics.registerFont(TTFont("Body", regular))
+            pdfmetrics.registerFont(TTFont("BodyBold", heavy))
+            font, bold, rupee = "Body", "BodyBold", "₹"
+        except Exception:
+            pass
+    money = lambda n: inr(n).replace("₹", rupee)
+    rate = lambda t: _rate(t).replace("₹", rupee)
+
+    by_group = doc.get("level") == "group"
+    items, negative, left_out = _stock_rows(doc)
+    navy, red, dim = colors.HexColor(NAVY), colors.HexColor(RED), colors.HexColor(DIM)
+    small = ParagraphStyle("small", fontName=font, fontSize=8.5, leading=10.5)
+    head_style = ParagraphStyle("h", fontName=bold, fontSize=16, leading=20, textColor=colors.HexColor(INK))
+    sub = ParagraphStyle("s", fontName=font, fontSize=9.5, leading=13, textColor=dim)
+    section = ParagraphStyle("sec", fontName=bold, fontSize=11, leading=15, spaceBefore=8, spaceAfter=3)
+
+    if by_group:
+        header, widths, right_from = ["Stock group", "Quantity", "Value"], [100 * mm, 35 * mm, 45 * mm], 1
+        cells = lambda r: [Paragraph(e(r.get("name") or ""), small), r.get("qty_text") or "", money(r.get("value"))]
+    else:
+        header, widths, right_from = ["Item", "Category", "Quantity", "Rate", "Value"], \
+            [78 * mm, 22 * mm, 22 * mm, 28 * mm, 30 * mm], 2
+        cells = lambda r: [Paragraph(e(r.get("name") or ""), small), Paragraph(e(r.get("group") or ""), small),
+                           r.get("qty_text") or "", rate(r.get("rate_text")), money(r.get("value"))]
+
+    def table(rows, with_total=False):
+        data = [header] + [cells(r) for r in rows]
+        if with_total:
+            data.append(["Total"] + [""] * (len(header) - 2) + [money(doc.get("total_value") or 0)])
+        t = Table(data, colWidths=widths, repeatRows=1)
+        style = [("FONT", (0, 0), (-1, -1), font, 8.5), ("FONT", (0, 0), (-1, 0), bold, 8.5),
+                 ("BACKGROUND", (0, 0), (-1, 0), navy), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                 ("ALIGN", (right_from, 0), (-1, -1), "RIGHT"), ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                 ("LINEBELOW", (0, 1), (-1, -1), 0.25, colors.HexColor(LINE)),
+                 ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]
+        for i, r in enumerate(rows, start=1):
+            if i % 2 == 0:
+                style.append(("BACKGROUND", (0, i), (-1, i), colors.HexColor(ZEBRA)))
+            if r in negative:
+                style.append(("TEXTCOLOR", (right_from, i), (-1, i), red))
+        if with_total:
+            style += [("FONT", (0, -1), (-1, -1), bold, 9), ("LINEABOVE", (0, -1), (-1, -1), 1, navy)]
+        t.setStyle(TableStyle(style))
+        return t
+
+    when = ""
+    try:
+        when = datetime.datetime.fromisoformat(doc["as_of"]).astimezone(IST).strftime("%d %b %Y, %I:%M %p")
+    except (KeyError, TypeError, ValueError):
+        pass
+    noun = "group" if by_group else "item"
+    story = [Paragraph("R. S. Infotech – Stock Summary", head_style),
+             Paragraph(f"As on {today:%A, %d %b %Y}" + (f" &middot; read from Tally {when}" if when else ""), sub),
+             Spacer(1, 4),
+             Paragraph(f"<b>Stock value {money(doc.get('total_value') or 0)}</b> &middot; {len(items)} {noun}s in stock"
+                       f" &middot; {len(negative)} below zero"
+                       + (f" &middot; {left_out} with no stock or no value not listed" if left_out else ""), sub)]
+    if doc.get("matches") is False:
+        story.append(Paragraph(f"Tally's P&amp;L closing stock is {money(doc.get('pl_closing_stock'))} -- check in Tally.",
+                               ParagraphStyle("w", parent=sub, textColor=red)))
+    if negative:
+        story += [Paragraph("Below zero – check these in Tally", ParagraphStyle("n", parent=section, textColor=red)),
+                  table(negative)]
+    story += [Paragraph(f"All {noun}s in stock", section), table(items, with_total=True)]
+
+    def footer(canvas, d):
+        canvas.saveState()
+        canvas.setFont(font, 7.5)
+        canvas.setFillColor(dim)
+        canvas.drawString(15 * mm, 10 * mm, f"R. S. Infotech – Stock Summary as on {today:%d %b %Y}")
+        canvas.drawRightString(A4[0] - 15 * mm, 10 * mm, f"Page {d.page}")
+        canvas.restoreState()
+
+    out = io.BytesIO()
+    SimpleDocTemplate(out, pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm, topMargin=14 * mm,
+                      bottomMargin=16 * mm, title=f"Stock Summary {today:%d %b %Y}",
+                      author="R. S. Infotech").build(story, onFirstPage=footer, onLaterPages=footer)
+    return out.getvalue()
 
 
 # Every report: its email subject's name, whether it's a daily report of
@@ -506,13 +622,16 @@ def read_pending(kind):
     return (snap.to_dict() or {}).get("proformas") or [] if snap.exists else None
 
 
-def send(subject, text, html_body):
+def send(subject, text, html_body, attachments=()):
+    """attachments: (file name, bytes) PDFs."""
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = f"R. S. Infotech Dashboard <{os.environ['GMAIL_USER']}>"
     msg["To"] = os.environ["MAIL_TO"]
     msg.set_content(text)
     msg.add_alternative(html_body, subtype="html")
+    for name, data in attachments:
+        msg.add_attachment(data, maintype="application", subtype="pdf", filename=name)
     host, port = os.environ.get("SMTP_HOST", "smtp.gmail.com"), int(os.environ.get("SMTP_PORT", "465"))
     if os.environ.get("SMTP_PLAIN"):          # local testing against a stand-in server only
         with smtplib.SMTP(host, port) as s:
@@ -552,17 +671,21 @@ def main():
     failed = []
     # One email per report; one failing to send doesn't stop the others.
     for kind in kinds:
+        attachments = []
         if kind in WEEKLY:
             # A pending list is as it stands now, dated the day it's sent.
-            subject, text, html_body = build_email(kind, today, read_pending(kind))
+            listed = read_pending(kind)
+            subject, text, html_body = build_email(kind, today, listed)
+            if kind == "stock" and listed:
+                attachments.append((f"Stock Summary {today:%d %b %Y}.pdf", stock_pdf(listed, today)))
         else:
             subject, text, html_body = build_email(kind, day, report)
         if dry_run:
             print(f"=== {subject}\n{text}\n")
             continue
         try:
-            send(subject, text, html_body)
-            print(f"Sent: {subject}")
+            send(subject, text, html_body, attachments)
+            print(f"Sent: {subject}" + (f" with {', '.join(n for n, _ in attachments)}" if attachments else ""))
         except Exception as ex:
             print(f"::error::Could not send {subject}: {ex}")
             failed.append(kind)
