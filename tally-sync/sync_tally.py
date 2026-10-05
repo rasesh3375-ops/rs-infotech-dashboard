@@ -1231,35 +1231,78 @@ class StockShapeError(Exception):
     without guessing -- the stock tile falls back to the groups."""
 
 
-def fetch_stock_by_category(date, dump_raw_dir=None):
+def fetch_stock_category_names(date, dump_raw_dir=None):
+    """{category name: parent name} for every Stock Category in Tally, from
+    the masters alone -- a list like the ledger list, which answered in
+    0.2 s, with nothing for Tally to total. "Not Applicable" is added: it's
+    where Tally's Stock Category Summary puts items with no category."""
+    root = _post_xml(_collection_request("StockCatList", "StockCategory", ["NAME", "PARENT"], date, date),
+                     dump_raw_dir, "stock_category_list", timeout=STOCK_TIMEOUT_SECONDS, max_attempts=1)
+    names = {}
+    for c in _collection_records(root, "STOCKCATEGORY"):
+        name = (c.get("NAME") or _text(c, "NAME") or "").strip()
+        if name:
+            names[name] = _text(c, "PARENT").strip()
+    names.setdefault("Not Applicable", "")
+    return names
+
+
+def _split_by_category(lines, categories):
+    """Splits a Stock Category Summary's flat run of lines into categories
+    and their items: a line named after a category starts it, every other
+    line is an item of the category before it. Returns (items, checks):
+    checks has one row per category -- its own line's value, and how many
+    items followed it and what they add up to -- and an item's "group" is
+    its category. A category with sub-categories has no items of its own;
+    its line is checked against nothing and its value isn't counted twice."""
+    items, checks, current = [], [], None
+    for r in lines:
+        if r["name"] in categories:
+            current = {"name": r["name"], "value": r["value"], "items": 0, "items_value": 0.0,
+                       "parent_only": r["name"] in set(categories.values())}
+            checks.append(current)
+        elif current is None:
+            checks.append({"name": "(before any category)", "value": 0.0, "items": 1,
+                           "items_value": r["value"], "parent_only": False})
+        else:
+            items.append(dict(r, group=current["name"]))
+            current["items"] += 1
+            current["items_value"] += r["value"]
+    for c in checks:
+        c["ok"] = (c["items"] == 0 and c["parent_only"]) or abs(c["items_value"] - c["value"]) < 1
+    return items, checks
+
+
+def fetch_stock_by_category(date, dump_raw_dir=None, report_checks=None):
     """(total, items) from Tally's Stock Category Summary as at date: every
     item with its quantity, rate, value and the category it's under -- the
     screen the owner reads stock from (Display > Stock Category Summary).
 
-    Asked plain and exploded, like fetch_stock_groups: the plain answer's
-    lines are the categories, and the exploded one is the same lines with
-    each category's items after it. So an exploded line that is a category
-    starts a new category, and every other line is an item of the category
-    before it. The items must add up to the categories' total, or
-    StockShapeError is raised rather than a list that counts something
-    twice or leaves something out."""
+    Which lines are categories comes from the category masters
+    (fetch_stock_category_names), not from the report's shape: on 5 Oct the
+    plain report already listed each category followed by its items, the
+    way the owner's own Tally screen shows it, so "the plain lines are the
+    categories" counted every item as a category. The plain report is
+    tried first and the exploded one second; the first in which every
+    category's items add up to that category's own line is used. If
+    neither does, StockShapeError is raised -- never a list that counts
+    something twice or leaves something out. report_checks, a list, gets
+    each attempt's per-category check for --test-stock to print."""
     report = "Stock Category Summary"
-    categories = fetch_stock_summary(date, dump_raw_dir, timeout=STOCK_TIMEOUT_SECONDS, report=report)
-    if not categories:
-        raise StockShapeError("Stock Category Summary came back empty")
-    total = round(sum(r["value"] for r in categories), 2)
-    names = {r["name"] for r in categories}
-    exploded = fetch_stock_summary(date, dump_raw_dir, timeout=STOCK_TIMEOUT_SECONDS, items=True, report=report)
-    items, current = [], ""
-    for r in exploded:
-        if r["name"] in names:
-            current = r["name"]
-        else:
-            items.append(dict(r, group=current))
-    if not items or abs(sum(r["value"] for r in items) - total) >= 1:
-        raise StockShapeError(f"{len(items)} items add up to Rs.{sum(r['value'] for r in items):.2f}, "
-                              f"not the categories' Rs.{total:.2f}")
-    return total, items
+    categories = fetch_stock_category_names(date, dump_raw_dir)
+    reasons = []
+    for exploded in (False, True):
+        lines = fetch_stock_summary(date, dump_raw_dir, timeout=STOCK_TIMEOUT_SECONDS, items=exploded, report=report)
+        items, checks = _split_by_category(lines, categories)
+        label = "exploded" if exploded else "plain"
+        if report_checks is not None:
+            report_checks.append((label, len(lines), checks))
+        bad = [c["name"] for c in checks if not c["ok"]]
+        if items and checks and not bad:
+            return round(sum(r["value"] for r in items), 2), items
+        reasons.append(f"{label}: " + (f"{len(bad)} categories don't add up ({', '.join(bad[:3])})" if bad
+                                       else "no items found"))
+    raise StockShapeError("; ".join(reasons))
 
 
 def _stock_marker(name):
@@ -2054,9 +2097,10 @@ def run_test_stock(items=False, categories=False):
     dump = os.path.join(SCRIPT_DIR, "tally_test_output")
     with _exclusive_lock("sync.lock", 60):
         started = time.time()
+        checks = []
         if categories:
             try:
-                total, lines = fetch_stock_by_category(today, dump)
+                total, lines = fetch_stock_by_category(today, dump, report_checks=checks)
             except StockShapeError as e:
                 print(f"\nStock Category Summary can't be used as it is: {e}")
                 lines, total = [], None
@@ -2069,6 +2113,13 @@ def run_test_stock(items=False, categories=False):
             pl_stock = None
             log.warning("P&L for comparison not read -- %s", e)
     rupees = lambda n: f"Rs.{n:,.2f}"
+    for label, count, rows in checks:
+        print(f"\nCategory check, {label} report ({count} lines):")
+        for c in rows[:25]:
+            print(f"    {'OK ' if c['ok'] else 'NO '} {c['name'][:34]:<34} line {rupees(c['value']):>16}"
+                  f"   {c['items']:>4} items {rupees(c['items_value']):>16}")
+        if len(rows) > 25:
+            print(f"    ... and {len(rows) - 25} more categories")
     name = "Stock Category Summary, item by item" if categories else "Stock Summary"
     print(f"\n{name} as at {today:%d %b %Y}: {len(lines)} lines, Tally answered in {took:.1f} s\n")
     for line in lines[:40]:
@@ -2083,7 +2134,7 @@ def run_test_stock(items=False, categories=False):
         print(f"    {'P&L closing stock':<52} {'':>10} {'':>12} {rupees(pl_stock):>16}")
     raw = os.path.join(dump, ("stock_category_summary_items" if categories else
                               "stock_summary_items" if items else "stock_summary") + ".xml")
-    if len(lines) < 3 and os.path.exists(raw):
+    if len(lines) < 3 and not categories and os.path.exists(raw):
         with open(raw, encoding="utf-8") as f:
             print("\nTally's answer, as sent:\n" + f.read()[:1500])
     print(f"\nRaw answer saved in {dump}. Nothing was written to the dashboard.")
