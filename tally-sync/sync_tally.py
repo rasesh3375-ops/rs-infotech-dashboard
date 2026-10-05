@@ -1162,6 +1162,54 @@ def fetch_stock_items(date, dump_raw_dir=None):
     return items
 
 
+def fetch_stock_summary(upto, dump_raw_dir=None, timeout=60):
+    """Tally's own Stock Summary report as at upto, top level: each stock
+    group (or item not in a group) with its closing quantity and value --
+    the screen Gateway > Stock Summary shows. A report rather than a
+    StockItem collection for the same reason as fetch_group_summary: on
+    5 Oct 2026 per-object balance requests hung Tally, while its own
+    reports answered in a second or less. One attempt only.
+
+    The export is a flat run of <DSPACCNAME><DSPDISPNAME>name</DSPDISPNAME>
+    </DSPACCNAME> each followed by a <DSPSTKINFO> holding the closing
+    figures (DSPCLQTY, DSPCLRATE, DSPCLAMTA). Tally writes the value of
+    stock, a debit, as a negative number; it's returned as a positive one."""
+    from xml.sax.saxutils import escape
+    xml_req = f"""<ENVELOPE>
+ <HEADER>
+  <TALLYREQUEST>Export Data</TALLYREQUEST>
+ </HEADER>
+ <BODY>
+  <EXPORTDATA>
+   <REQUESTDESC>
+    <REPORTNAME>Stock Summary</REPORTNAME>
+    <STATICVARIABLES>
+     <SVCURRENTCOMPANY>{escape(TALLY_COMPANY_NAME)}</SVCURRENTCOMPANY>
+     <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+     <SVFROMDATE>{_fmt_date(_fy_start(upto))}</SVFROMDATE>
+     <SVTODATE>{_fmt_date(upto)}</SVTODATE>
+    </STATICVARIABLES>
+   </REQUESTDESC>
+  </EXPORTDATA>
+ </BODY>
+</ENVELOPE>"""
+    root = _post_xml(xml_req, dump_raw_dir, "stock_summary", timeout=timeout, max_attempts=1)
+    lines, name = [], None
+    for el in root.iter():
+        if el.tag == "DSPACCNAME":
+            name = _text(el, "DSPDISPNAME")
+        elif el.tag == "DSPSTKINFO" and name is not None:
+            qty = next((x.text.strip() for x in el.iter("DSPCLQTY") if x.text and x.text.strip()), "")
+            amount = next((x.text.strip() for x in el.iter("DSPCLAMTA") if x.text and x.text.strip()), "")
+            try:
+                value = -float(amount.replace(",", "")) if amount else 0.0
+            except ValueError:
+                value = 0.0
+            lines.append({"name": name, "qty_text": qty, "value": round(value, 2)})
+            name = None
+    return lines
+
+
 def _stock_marker(name):
     return os.path.join(SCRIPT_DIR, name)
 
@@ -1926,6 +1974,37 @@ def run_test_group(group):
     return 0
 
 
+def run_test_stock():
+    """--test-stock: asks Tally for its Stock Summary as at today and prints
+    each line and the total next to Tally's own P&L closing stock, which
+    should be the same figure -- writing nothing to the dashboard. Run by
+    hand while watching Tally before any sync relies on it. The raw answer
+    is saved in tally_test_output for checking."""
+    today = datetime.date.today()
+    dump = os.path.join(SCRIPT_DIR, "tally_test_output")
+    with _exclusive_lock("sync.lock", 60):
+        started = time.time()
+        lines = fetch_stock_summary(today, dump_raw_dir=dump)
+        took = time.time() - started
+        try:
+            pl_stock = fetch_profit_and_loss(today, dump).get("closing_stock")
+        except TallyError as e:
+            pl_stock = None
+            log.warning("P&L for comparison not read -- %s", e)
+    rupees = lambda n: f"Rs.{n:,.2f}"
+    print(f"\nStock Summary as at {today:%d %b %Y}: {len(lines)} lines, Tally answered in {took:.1f} s\n")
+    for line in lines[:40]:
+        print(f"    {line['name']:<40} {line['qty_text']:>16} {rupees(line['value']):>18}")
+    if len(lines) > 40:
+        print(f"    ... and {len(lines) - 40} more")
+    total = sum(l["value"] for l in lines)
+    print(f"\n    {'Total':<40} {'':>16} {rupees(total):>18}")
+    if pl_stock is not None:
+        print(f"    {'P&L closing stock (should match)':<40} {'':>16} {rupees(pl_stock):>18}")
+    print(f"\nRaw answer saved in {dump}. Nothing was written to the dashboard.")
+    return 0
+
+
 def run_check():
     """Checks the two things a sync needs, the same way a sync uses them,
     and prints one CHECK line for each: the Firebase key (reads from the
@@ -1972,6 +2051,8 @@ def main():
                         help="Only check that the Firebase key works and Tally answers with the company readable, then exit")
     parser.add_argument("--test-group", metavar="GROUP",
                         help="Print Tally's Group Summary of one group as at today, to compare with Tally, write nothing")
+    parser.add_argument("--test-stock", action="store_true",
+                        help="Print Tally's Stock Summary as at today next to the P&L closing stock, write nothing")
     parser.add_argument("--if-leader", action="store_true",
                         help="Skip (exit code 3) when this is the backup PC and the main sync PC is active")
     parser.add_argument("--listen", action="store_true",
@@ -1995,6 +2076,13 @@ def main():
     if args.test_group:
         try:
             sys.exit(run_test_group(args.test_group))
+        except TallyError as e:
+            log.error("Tally error: %s", e)
+            sys.exit(1)
+
+    if args.test_stock:
+        try:
+            sys.exit(run_test_stock())
         except TallyError as e:
             log.error("Tally error: %s", e)
             sys.exit(1)
