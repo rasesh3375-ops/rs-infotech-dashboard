@@ -1005,6 +1005,90 @@ def _affects_books(v, type_parents):
             and _text(v, "ISCANCELLED").lower() != "yes")
 
 
+def _bill_date(raw):
+    """A date as Tally's bill reports print it -- "1-Apr-26", "01-Apr-2026"
+    or YYYYMMDD -- as YYYY-MM-DD, or "" when it can't be read."""
+    raw = (raw or "").strip()
+    for fmt in ("%d-%b-%y", "%d-%b-%Y", "%Y%m%d", "%d-%m-%Y", "%Y-%m-%d"):
+        try:
+            return datetime.datetime.strptime(raw, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return ""
+
+
+def fetch_bills(kind, upto, dump_raw_dir=None, timeout=60):
+    """Every pending bill in Tally's own Bills Receivable (kind "receivable",
+    the Sundry Debtors' unpaid invoices) or Bills Payable ("payable") report
+    as at upto: [{party, ref, date, due, overdue_days, amount}], amount as
+    owed -- positive for a debtor's unpaid invoice or an unpaid supplier
+    bill, negative for an advance. Only parties kept bill-by-bill in Tally
+    appear. A report, one attempt, a time limit: the same care as the
+    other balance reads, see fetch_group_summary.
+
+    The export is a flat run per bill of <BILLFIXED> (BILLDATE, BILLREF,
+    BILLPARTY) followed by its siblings BILLCL (the pending amount, a debit
+    negative), BILLDUE and BILLOVERDUE (days past due)."""
+    from xml.sax.saxutils import escape
+    report = "Bills Receivable" if kind == "receivable" else "Bills Payable"
+    xml_req = f"""<ENVELOPE>
+ <HEADER>
+  <TALLYREQUEST>Export Data</TALLYREQUEST>
+ </HEADER>
+ <BODY>
+  <EXPORTDATA>
+   <REQUESTDESC>
+    <REPORTNAME>{report}</REPORTNAME>
+    <STATICVARIABLES>
+     <SVCURRENTCOMPANY>{escape(TALLY_COMPANY_NAME)}</SVCURRENTCOMPANY>
+     <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+     <SVFROMDATE>{_fmt_date(_fy_start(upto))}</SVFROMDATE>
+     <SVTODATE>{_fmt_date(upto)}</SVTODATE>
+    </STATICVARIABLES>
+   </REQUESTDESC>
+  </EXPORTDATA>
+ </BODY>
+</ENVELOPE>"""
+    root = _post_xml(xml_req, dump_raw_dir, "bills_" + kind, timeout=timeout, max_attempts=1)
+    sign = -1 if kind == "receivable" else 1
+    bills, cur = [], None
+    for el in root.iter():
+        if el.tag == "BILLFIXED":
+            cur = {"party": _text(el, "BILLPARTY"), "ref": _text(el, "BILLREF"),
+                   "date": _bill_date(_text(el, "BILLDATE")), "due": "", "overdue_days": None, "amount": 0.0}
+            bills.append(cur)
+        elif cur is not None and el.tag == "BILLCL":
+            try:
+                cur["amount"] = round(sign * float((el.text or "0").replace(",", "")), 2)
+            except ValueError:
+                pass
+        elif cur is not None and el.tag == "BILLDUE":
+            cur["due"] = _bill_date(el.text)
+        elif cur is not None and el.tag == "BILLOVERDUE":
+            try:
+                cur["overdue_days"] = int(float((el.text or "").replace(",", "")))
+            except ValueError:
+                pass
+    return bills
+
+
+def oldest_bills_by_party(bills, today):
+    """{party: {"oldest": YYYY-MM-DD, "days": days since that bill's date,
+    "bills": how many are pending}} -- the oldest unpaid bill of each
+    party, counting only bills still owed (an advance isn't a bill waiting
+    to be paid)."""
+    out = {}
+    for b in bills:
+        if b["amount"] <= 0.5 or not b["date"]:
+            continue
+        p = out.setdefault(b["party"], {"oldest": b["date"], "bills": 0})
+        p["bills"] += 1
+        p["oldest"] = min(p["oldest"], b["date"])
+    for p in out.values():
+        p["days"] = (today - datetime.date.fromisoformat(p["oldest"])).days
+    return out
+
+
 class _GroupBalances:
     """Group Summary closing balances for one sync, each group and day asked
     of Tally once and reused -- a day's closing is the next day's opening,
@@ -2077,6 +2161,39 @@ def _record_result(ok, message, dry_run=False):
         log.warning("Sync outcome not recorded -- %s", e)
 
 
+def run_test_bills():
+    """--test-bills: asks Tally for its Bills Receivable and Bills Payable as
+    at today and prints how long each took, how many bills are pending,
+    their total next to the Sundry Debtors/Creditors total, and the parties
+    with the oldest unpaid bills -- writing nothing to the dashboard. Run
+    by hand while watching Tally before any sync relies on it."""
+    today = datetime.date.today()
+    dump = os.path.join(SCRIPT_DIR, "tally_test_output")
+    rupees = lambda n: f"Rs.{n:,.2f}"
+    with _exclusive_lock("sync.lock", 60):
+        for kind, group, sign in (("receivable", "Sundry Debtors", 1), ("payable", "Sundry Creditors", -1)):
+            started = time.time()
+            bills = fetch_bills(kind, today, dump)
+            took = time.time() - started
+            group_total = sign * sum(line["closing"] for line in fetch_group_summary(group, today, dump))
+            owed = sum(b["amount"] for b in bills)
+            parties = oldest_bills_by_party(bills, today)
+            print(f"\nBills {kind} as at {today:%d %b %Y}: {len(bills)} bills of {len(parties)} parties, "
+                  f"Tally answered in {took:.1f} s")
+            print(f"    {'Pending bills total':<44} {rupees(owed):>18}")
+            print(f"    {group + ' total (should be close)':<44} {rupees(group_total):>18}")
+            if not bills:
+                raw = os.path.join(dump, f"bills_{kind}.xml")
+                if os.path.exists(raw):
+                    with open(raw, encoding="utf-8") as f:
+                        print("    No bills read -- Tally's answer, as sent:\n" + f.read()[:1200])
+            print("    Oldest unpaid, by party:")
+            for name, p in sorted(parties.items(), key=lambda kv: -kv[1]["days"])[:12]:
+                print(f"      {name[:40]:<40} since {p['oldest']}  {p['days']:>5} days  ({p['bills']} bills)")
+    print(f"\nRaw answers saved in {dump}. Nothing was written to the dashboard.")
+    return 0
+
+
 def run_test_group(group):
     """--test-group "Cash-in-Hand": asks Tally for its Group Summary of one
     group as at today and prints each line and the total, to compare with
@@ -2202,6 +2319,8 @@ def main():
     parser.add_argument("--test-stock", nargs="?", const="summary", choices=["summary", "items", "categories"],
                         help="Print Tally's Stock Summary as at today next to the P&L closing stock, write nothing; "
                              "'items' asks for it exploded, 'categories' for the Stock Category Summary item by item")
+    parser.add_argument("--test-bills", action="store_true",
+                        help="Print Tally's Bills Receivable and Bills Payable as at today, write nothing")
     parser.add_argument("--if-leader", action="store_true",
                         help="Skip (exit code 3) when this is the backup PC and the main sync PC is active")
     parser.add_argument("--listen", action="store_true",
@@ -2225,6 +2344,13 @@ def main():
     if args.test_group:
         try:
             sys.exit(run_test_group(args.test_group))
+        except TallyError as e:
+            log.error("Tally error: %s", e)
+            sys.exit(1)
+
+    if args.test_bills:
+        try:
+            sys.exit(run_test_bills())
         except TallyError as e:
             log.error("Tally error: %s", e)
             sys.exit(1)
