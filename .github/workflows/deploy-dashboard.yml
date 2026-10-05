@@ -23,6 +23,11 @@ on:
       - .github/workflows/deploy-dashboard.yml
   workflow_dispatch:
 
+# Read the code and nothing else: nothing here pushes, comments or edits the
+# repository, so the token GitHub hands each run can't either.
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: ubuntu-latest

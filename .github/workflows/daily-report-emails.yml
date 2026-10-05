@@ -32,6 +32,11 @@ on:
         options: [daily, weekly, debtors, cash, bank, purchase, sales, challans, proformas, stock]
         default: daily
 
+# Read the code and nothing else: nothing here pushes, comments or edits the
+# repository, so the token GitHub hands each run can't either.
+permissions:
+  contents: read
+
 jobs:
   email:
     runs-on: ubuntu-latest
