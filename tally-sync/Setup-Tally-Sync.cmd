@@ -185,8 +185,8 @@ Write-Host ''
 if ($problems -eq 0) {
     Write-Host 'ALL DONE. The sync is set up and every check passed.' -ForegroundColor Green
     Write-Host ''
-    $answer = Read-Host 'Run the first sync now? It covers the whole year and takes about 15 minutes, in a separate black window - leave that window open until it closes by itself. (Y/N)'
-    if ($answer -match '^[Yy]') { Start-ScheduledTask -TaskName $TaskName; Ok 'First sync started.' }
+    $answer = Read-Host 'Run the first sync now? It covers the whole year and takes about 15 minutes, in the background with no window - the dashboard fills in as it goes. (Y/N)'
+    if ($answer -match '^[Yy]') { Start-ScheduledTask -TaskName $TaskName; Ok 'First sync started. It ends with "Exit code: 0" in the log file below.' }
     else { Write-Host '   It will run by itself at the next scheduled time.' }
     Write-Host ''
     Write-Host "Log file: $dir\daily_sync_log.txt"
