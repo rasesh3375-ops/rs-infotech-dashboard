@@ -209,6 +209,16 @@ def _post_xml(xml_request, dump_raw_dir=None, dump_name=None, timeout=None, max_
     timeout = timeout or REQUEST_TIMEOUT_SECONDS
     resp = None
     last_error = None
+    # Every request is logged as it goes out and when it comes back, with
+    # how long Tally took, so a log that stops after a "->" line names the
+    # exact request Tally froze on. Added after Tally hung twice on 5 Oct
+    # 2026 at the start of a sync without saying which request did it.
+    m = re.search(r"<ID>(.*?)</ID>|<REPORTNAME>(.*?)</REPORTNAME>", xml_request)
+    what = dump_name or (m and (m.group(1) or m.group(2))) or "request"
+    to = re.search(r"<SVTODATE>(\d+)</SVTODATE>", xml_request)
+    what += f" @{to.group(1)}" if to else ""
+    started = time.time()
+    log.info("Tally -> %s (pid %d)", what, os.getpid())
     for attempt in range(1, max_attempts + 1):
         try:
             resp = requests.post(
@@ -229,7 +239,9 @@ def _post_xml(xml_request, dump_raw_dir=None, dump_name=None, timeout=None, max_
             log.warning("Attempt %d/%d failed (%s) -- retrying in 5s...", attempt, max_attempts, last_error)
             time.sleep(5)
     if resp is None:
+        log.info("Tally <- %s FAILED after %.1f s", what, time.time() - started)
         raise last_error
+    log.info("Tally <- %s %.1f s, %d bytes", what, time.time() - started, len(resp.content))
 
     if resp.status_code != 200:
         raise TallyError(f"Tally returned HTTP {resp.status_code}: {resp.text[:300]}")

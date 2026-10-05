@@ -124,6 +124,25 @@ if ($updated -contains 'requirements.txt') {
 if ($updated) { Add-Content -Path $logFile -Encoding ASCII -Value "----- Updated from GitHub: $($updated -join ', ') -----" }
 if ($updateProblems) { Add-Content -Path $logFile -Encoding ASCII -Value "----- Update skipped ($($updateProblems -join '; ')) - running the version already here -----" }
 
+# Through cmd rather than PowerShell's *>> redirect: PowerShell 5.1 wraps
+# every line a native program writes to stderr -- which is where Python's
+# logging goes, INFO lines included -- in a NativeCommandError, so the old
+# log read as a wall of errors even on a run that worked.
+# --if-leader: on the backup PC (no sync_role.txt) this exits with code 3
+# straight away while the main sync PC is active, so the two PCs don't
+# both re-sync the week every morning. The full-year marker is only
+# written by a run that actually synced.
+cmd /c "python sync_tally.py --if-leader --backfill-from $from --backfill-to $to >> `"$logFile`" 2>&1"
+$exitCode = $LASTEXITCODE
+if ($exitCode -eq 3) {
+    Add-Content -Path $logFile -Encoding ASCII -Value "----- Skipped: the main sync PC is active -----"
+    exit 0
+}
+Add-Content -Path $logFile -Encoding ASCII -Value "----- Exit code: $exitCode -----"
+if ($fullResync -and $exitCode -eq 0) {
+    Set-Content -Path $marker -Encoding ASCII -Value "$dataFormat $timestamp"
+}
+
 # --- Sync now listener -----------------------------------------------------
 # sync_tally.py --listen answers the dashboard's Sync now button and syncs
 # today hourly during office hours (see run_listener). It's installed from
@@ -132,6 +151,11 @@ if ($updateProblems) { Add-Content -Path $logFile -Encoding ASCII -Value "----- 
 # it stopped (a second copy finds the first one's lock and exits at once).
 # pythonw runs it without a window. Registered only when missing, or when
 # the Python it points at has gone, so a running listener isn't disturbed.
+# Set up and started only after this script's own sync has finished: on
+# 5 Oct 2026 Tally hung twice right at the start of this script, when the
+# listener used to be started just before the sync and could ask Tally
+# something at the same moment the sync did. A listener that has been
+# switched off (schtasks /change /disable) is left off.
 $listenerTask = 'RS Infotech Tally Sync Listener'
 try {
     $existing = Get-ScheduledTask -TaskName $listenerTask -ErrorAction SilentlyContinue
@@ -153,28 +177,10 @@ try {
             -Principal $principal -Force -ErrorAction Stop | Out-Null
         Add-Content -Path $logFile -Encoding ASCII -Value "----- Installed the Sync now listener ($pythonw) -----"
     }
-    if ((Get-ScheduledTask -TaskName $listenerTask -ErrorAction Stop).State -ne 'Running') {
+    $state = (Get-ScheduledTask -TaskName $listenerTask -ErrorAction Stop).State
+    if ($state -ne 'Running' -and $state -ne 'Disabled') {
         Start-ScheduledTask -TaskName $listenerTask
     }
 } catch {
     Add-Content -Path $logFile -Encoding ASCII -Value "----- Could not set up the Sync now listener: $($_.Exception.Message) -----"
-}
-
-# Through cmd rather than PowerShell's *>> redirect: PowerShell 5.1 wraps
-# every line a native program writes to stderr -- which is where Python's
-# logging goes, INFO lines included -- in a NativeCommandError, so the old
-# log read as a wall of errors even on a run that worked.
-# --if-leader: on the backup PC (no sync_role.txt) this exits with code 3
-# straight away while the main sync PC is active, so the two PCs don't
-# both re-sync the week every morning. The full-year marker is only
-# written by a run that actually synced.
-cmd /c "python sync_tally.py --if-leader --backfill-from $from --backfill-to $to >> `"$logFile`" 2>&1"
-$exitCode = $LASTEXITCODE
-if ($exitCode -eq 3) {
-    Add-Content -Path $logFile -Encoding ASCII -Value "----- Skipped: the main sync PC is active -----"
-    exit 0
-}
-Add-Content -Path $logFile -Encoding ASCII -Value "----- Exit code: $exitCode -----"
-if ($fullResync -and $exitCode -eq 0) {
-    Set-Content -Path $marker -Encoding ASCII -Value "$dataFormat $timestamp"
 }
