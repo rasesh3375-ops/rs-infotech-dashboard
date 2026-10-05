@@ -364,6 +364,9 @@
     /* The balance is this table's third column, which the rule for the
        other tables would push onto a line of its own. */
     table.party-table td.num-col{ order:2; flex-basis:auto; font-size:inherit; color:inherit; }
+    /* Stock items: quantity and value beside the name; the rate is left to
+       the computer's wider table. */
+    table.party-table td.rate-col{ display:none; }
     table.datatable td.empty-note{ flex-basis:100%; }
   }
 </style>
@@ -1086,14 +1089,19 @@ function renderStock(d){
     return;
   }
   document.getElementById('stockTotal').textContent = d.as_of ? fmtINR(d.total_value) : '–';
-  // Since 5 Oct the sync stores Tally's Stock Summary by stock group
-  // (level "group"), with the parent group's name in .group -- the same on
-  // every row, so the column is left out rather than repeated.
+  // The sync stores Tally's Stock Category Summary item by item (level
+  // "item", .group is the category, with the rate as Tally shows it), or
+  // -- when that report can't be read as it is -- the Stock Summary by
+  // stock group (level "group"), whose .group is the same parent on every
+  // row and is left out rather than repeated.
   const byGroup = d.level === 'group';
+  const byItem = d.level === 'item';
   const noun = byGroup ? 'group' : 'item';
   document.getElementById('stockHead').innerHTML = byGroup
     ? '<tr><th>Stock group</th><th class="num-col">Quantity</th><th class="num-col">Value</th></tr>'
-    : '<tr><th>Item</th><th>Group</th><th class="num-col">Quantity</th><th class="num-col">Value</th></tr>';
+    : byItem
+      ? '<tr><th>Item</th><th>Category</th><th class="num-col">Quantity</th><th class="num-col rate-col">Rate</th><th class="num-col">Value</th></tr>'
+      : '<tr><th>Item</th><th>Group</th><th class="num-col">Quantity</th><th class="num-col">Value</th></tr>';
   const notes = [];
   if (d.as_of) notes.push(items.length + ' ' + noun + (items.length === 1 ? '' : 's') + ' · as on ' + syncWhen(d.as_of));
   if (d.matches === false) notes.push('⚠ P&L stock ' + fmtINR(d.pl_closing_stock));
@@ -1107,8 +1115,9 @@ function renderStock(d){
       <td>${escapeHtml(r.name || '')}</td>
       ${byGroup ? '' : `<td>${escapeHtml(r.group || '')}</td>`}
       <td class="num-col"${(r.value || 0) < 0 ? ' style="color:var(--red)"' : ''}>${escapeHtml(fmtQty(r))}</td>
+      ${byItem ? `<td class="num-col rate-col">${escapeHtml(r.rate_text || '')}</td>` : ''}
       <td class="num-col"${(r.value || 0) < 0 ? ' style="color:var(--red)"' : ''}>${fmtINR(r.value)}</td>
-    </tr>`).join('') : `<tr><td colspan="${byGroup ? 3 : 4}" class="empty-note">No stock read yet.</td></tr>`;
+    </tr>`).join('') : `<tr><td colspan="${byGroup ? 3 : byItem ? 5 : 4}" class="empty-note">No stock read yet.</td></tr>`;
 }
 
 function attachStockListener(){
@@ -1323,6 +1332,9 @@ function shareSections(){
     (shownStock || {}).level === 'group'
       ? { title: 'Stock', head: ['Stock group', 'Quantity', 'Amount'],
           rows: shownStock.items.map(r => [r.name || '', r.qty_text || '', fmtINR(r.value)]) }
+      : (shownStock || {}).level === 'item'
+      ? { title: 'Stock', head: ['Item', 'Category', 'Quantity', 'Rate', 'Amount'],
+          rows: shownStock.items.map(r => [r.name || '', r.group || '', r.qty_text || '', r.rate_text || '', fmtINR(r.value)]) }
       : { title: 'Stock', head: ['Item', 'Group', 'Quantity', 'Amount'],
           rows: ((shownStock || {}).items || []).map(r => [r.name || '', r.group || '', r.qty_text || '', fmtINR(r.value)]) },
     ...['debtors', 'creditors'].map(key => ({ title: 'Sundry ' + key, head: ['Party', 'Group', 'Amount'],

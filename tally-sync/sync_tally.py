@@ -1135,7 +1135,7 @@ def _sync_party_balances(balances, dry_run=False, force=False):
         log.warning("Sundry debtors/creditors not written -- %s", e)
 
 
-def fetch_stock_summary(upto, dump_raw_dir=None, timeout=60, items=False):
+def fetch_stock_summary(upto, dump_raw_dir=None, timeout=60, items=False, report="Stock Summary"):
     """Tally's own Stock Summary report as at upto, top level: each stock
     group (or item not in a group) with its closing quantity and value --
     the screen Gateway > Stock Summary shows. A report rather than a
@@ -1150,7 +1150,11 @@ def fetch_stock_summary(upto, dump_raw_dir=None, timeout=60, items=False):
 
     items=True asks for the report exploded, item by item -- what F5 does on
     Tally's own Stock Summary screen. On 5 Oct the plain report came back as
-    one line in 0.2 s, matching the P&L closing stock to the paisa."""
+    one line in 0.2 s, matching the P&L closing stock to the paisa.
+
+    report="Stock Category Summary" is the same export by stock category --
+    the screen the owner reads stock from -- whose exploded form lists every
+    item under its category, with the rate as well."""
     from xml.sax.saxutils import escape
     xml_req = f"""<ENVELOPE>
  <HEADER>
@@ -1159,7 +1163,7 @@ def fetch_stock_summary(upto, dump_raw_dir=None, timeout=60, items=False):
  <BODY>
   <EXPORTDATA>
    <REQUESTDESC>
-    <REPORTNAME>Stock Summary</REPORTNAME>
+    <REPORTNAME>{escape(report)}</REPORTNAME>
     <STATICVARIABLES>
      <SVCURRENTCOMPANY>{escape(TALLY_COMPANY_NAME)}</SVCURRENTCOMPANY>
      <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
@@ -1171,8 +1175,8 @@ def fetch_stock_summary(upto, dump_raw_dir=None, timeout=60, items=False):
   </EXPORTDATA>
  </BODY>
 </ENVELOPE>"""
-    root = _post_xml(xml_req, dump_raw_dir, "stock_summary_items" if items else "stock_summary",
-                     timeout=timeout, max_attempts=1)
+    dump_name = re.sub(r"\W+", "_", report).strip("_").lower() + ("_items" if items else "")
+    root = _post_xml(xml_req, dump_raw_dir, dump_name, timeout=timeout, max_attempts=1)
     lines, name = [], None
     for el in root.iter():
         if el.tag == "DSPACCNAME":
@@ -1180,11 +1184,12 @@ def fetch_stock_summary(upto, dump_raw_dir=None, timeout=60, items=False):
         elif el.tag == "DSPSTKINFO" and name is not None:
             qty = next((x.text.strip() for x in el.iter("DSPCLQTY") if x.text and x.text.strip()), "")
             amount = next((x.text.strip() for x in el.iter("DSPCLAMTA") if x.text and x.text.strip()), "")
+            rate = next((x.text.strip() for x in el.iter("DSPCLRATE") if x.text and x.text.strip()), "")
             try:
                 value = -float(amount.replace(",", "")) if amount else 0.0
             except ValueError:
                 value = 0.0
-            lines.append({"name": name, "qty_text": qty, "value": round(value, 2)})
+            lines.append({"name": name, "qty_text": qty, "rate_text": rate, "value": round(value, 2)})
             name = None
     return lines
 
@@ -1219,6 +1224,42 @@ def fetch_stock_groups(date, dump_raw_dir=None):
                         sum(r["value"] for r in under), total)
         groups = [dict(r, group="") for r in top]
     return total, groups
+
+
+class StockShapeError(Exception):
+    """Tally answered, but not in a shape the item list can be built from
+    without guessing -- the stock tile falls back to the groups."""
+
+
+def fetch_stock_by_category(date, dump_raw_dir=None):
+    """(total, items) from Tally's Stock Category Summary as at date: every
+    item with its quantity, rate, value and the category it's under -- the
+    screen the owner reads stock from (Display > Stock Category Summary).
+
+    Asked plain and exploded, like fetch_stock_groups: the plain answer's
+    lines are the categories, and the exploded one is the same lines with
+    each category's items after it. So an exploded line that is a category
+    starts a new category, and every other line is an item of the category
+    before it. The items must add up to the categories' total, or
+    StockShapeError is raised rather than a list that counts something
+    twice or leaves something out."""
+    report = "Stock Category Summary"
+    categories = fetch_stock_summary(date, dump_raw_dir, timeout=STOCK_TIMEOUT_SECONDS, report=report)
+    if not categories:
+        raise StockShapeError("Stock Category Summary came back empty")
+    total = round(sum(r["value"] for r in categories), 2)
+    names = {r["name"] for r in categories}
+    exploded = fetch_stock_summary(date, dump_raw_dir, timeout=STOCK_TIMEOUT_SECONDS, items=True, report=report)
+    items, current = [], ""
+    for r in exploded:
+        if r["name"] in names:
+            current = r["name"]
+        else:
+            items.append(dict(r, group=current))
+    if not items or abs(sum(r["value"] for r in items) - total) >= 1:
+        raise StockShapeError(f"{len(items)} items add up to Rs.{sum(r['value'] for r in items):.2f}, "
+                              f"not the categories' Rs.{total:.2f}")
+    return total, items
 
 
 def _stock_marker(name):
@@ -1260,7 +1301,15 @@ def _sync_stock(date, pl_closing_stock=None, dry_run=False, dump_raw_dir=None):
         return
     started = time.time()
     try:
-        total, groups = fetch_stock_groups(date, dump_raw_dir)
+        try:
+            total, groups = fetch_stock_by_category(date, dump_raw_dir)
+            level = "item"
+        except TallyTimeout:
+            raise
+        except (StockShapeError, TallyError) as e:
+            log.warning("Stock by category not usable (%s) -- reading it by stock group instead.", e)
+            total, groups = fetch_stock_groups(date, dump_raw_dir)
+            level = "group"
     except TallyTimeout as e:
         until = now + datetime.timedelta(hours=STOCK_PAUSE_HOURS)
         log.warning("Stock not read (%s) -- not asking again until %s.", e, f"{until:%d %b %H:%M}")
@@ -1282,10 +1331,10 @@ def _sync_stock(date, pl_closing_stock=None, dry_run=False, dump_raw_dir=None):
         except TallyError as e:
             log.warning("P&L closing stock not read for the stock check -- %s", e)
     matches = None if pl_closing_stock is None else abs(total - pl_closing_stock) < 1
-    log.info("Stock: Rs.%s in %d groups (%.1f s)%s", total, len(groups), took,
+    log.info("Stock: Rs.%s in %d %ss (%.1f s)%s", total, len(groups), level, took,
              "" if matches is not False else f" -- P&L closing stock is Rs.{pl_closing_stock}")
     doc = {"as_of": datetime.datetime.now(datetime.timezone.utc).isoformat(), "date": date.isoformat(),
-           "level": "group", "total_value": total, "count": len(groups), "items": groups,
+           "level": level, "total_value": total, "count": len(groups), "items": groups,
            "seconds": round(took, 1), "pl_closing_stock": pl_closing_stock, "matches": matches,
            "error": None, "paused_until": None}
     if dry_run:
@@ -1995,7 +2044,7 @@ def run_test_group(group):
     return 0
 
 
-def run_test_stock(items=False):
+def run_test_stock(items=False, categories=False):
     """--test-stock: asks Tally for its Stock Summary as at today and prints
     each line and the total next to Tally's own P&L closing stock, which
     should be the same figure -- writing nothing to the dashboard. Run by
@@ -2005,7 +2054,14 @@ def run_test_stock(items=False):
     dump = os.path.join(SCRIPT_DIR, "tally_test_output")
     with _exclusive_lock("sync.lock", 60):
         started = time.time()
-        lines = fetch_stock_summary(today, dump_raw_dir=dump, items=items)
+        if categories:
+            try:
+                total, lines = fetch_stock_by_category(today, dump)
+            except StockShapeError as e:
+                print(f"\nStock Category Summary can't be used as it is: {e}")
+                lines, total = [], None
+        else:
+            lines = fetch_stock_summary(today, dump_raw_dir=dump, items=items)
         took = time.time() - started
         try:
             pl_stock = fetch_profit_and_loss(today, dump).get("closing_stock")
@@ -2013,16 +2069,20 @@ def run_test_stock(items=False):
             pl_stock = None
             log.warning("P&L for comparison not read -- %s", e)
     rupees = lambda n: f"Rs.{n:,.2f}"
-    print(f"\nStock Summary as at {today:%d %b %Y}: {len(lines)} lines, Tally answered in {took:.1f} s\n")
+    name = "Stock Category Summary, item by item" if categories else "Stock Summary"
+    print(f"\n{name} as at {today:%d %b %Y}: {len(lines)} lines, Tally answered in {took:.1f} s\n")
     for line in lines[:40]:
-        print(f"    {line['name']:<40} {line['qty_text']:>16} {rupees(line['value']):>18}")
+        where = f"[{line['group']}] " if categories else ""
+        print(f"    {(where + line['name'])[:52]:<52} {line['qty_text']:>10} {line.get('rate_text', ''):>12} {rupees(line['value']):>16}")
     if len(lines) > 40:
         print(f"    ... and {len(lines) - 40} more")
-    total = sum(l["value"] for l in lines)
-    print(f"\n    {'Total':<40} {'':>16} {rupees(total):>18}")
+    if not categories or total is None:
+        total = sum(l["value"] for l in lines)
+    print(f"\n    {'Total':<52} {'':>10} {'':>12} {rupees(total):>16}")
     if pl_stock is not None:
-        print(f"    {'P&L closing stock (should match)':<40} {'':>16} {rupees(pl_stock):>18}")
-    raw = os.path.join(dump, ("stock_summary_items" if items else "stock_summary") + ".xml")
+        print(f"    {'P&L closing stock':<52} {'':>10} {'':>12} {rupees(pl_stock):>16}")
+    raw = os.path.join(dump, ("stock_category_summary_items" if categories else
+                              "stock_summary_items" if items else "stock_summary") + ".xml")
     if len(lines) < 3 and os.path.exists(raw):
         with open(raw, encoding="utf-8") as f:
             print("\nTally's answer, as sent:\n" + f.read()[:1500])
@@ -2076,9 +2136,9 @@ def main():
                         help="Only check that the Firebase key works and Tally answers with the company readable, then exit")
     parser.add_argument("--test-group", metavar="GROUP",
                         help="Print Tally's Group Summary of one group as at today, to compare with Tally, write nothing")
-    parser.add_argument("--test-stock", nargs="?", const="summary", choices=["summary", "items"],
+    parser.add_argument("--test-stock", nargs="?", const="summary", choices=["summary", "items", "categories"],
                         help="Print Tally's Stock Summary as at today next to the P&L closing stock, write nothing; "
-                             "'--test-stock items' asks for it item by item")
+                             "'items' asks for it exploded, 'categories' for the Stock Category Summary item by item")
     parser.add_argument("--if-leader", action="store_true",
                         help="Skip (exit code 3) when this is the backup PC and the main sync PC is active")
     parser.add_argument("--listen", action="store_true",
@@ -2108,7 +2168,7 @@ def main():
 
     if args.test_stock:
         try:
-            sys.exit(run_test_stock(items=args.test_stock == "items"))
+            sys.exit(run_test_stock(items=args.test_stock == "items", categories=args.test_stock == "categories"))
         except TallyError as e:
             log.error("Tally error: %s", e)
             sys.exit(1)
