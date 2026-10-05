@@ -123,11 +123,12 @@ SYNC_CONTROL_COLLECTION = "sync_control"
 HOURLY_SYNC_FROM_HOUR = 10
 HOURLY_SYNC_TO_HOUR = 20
 
-# Where Tally keeps the company data. The listener watches it and syncs
-# today about a minute after entries stop changing, so the dashboard is a
-# couple of minutes behind Tally instead of up to an hour. Overridden by
-# tally_data_dir.txt next to this script, if a PC sees it at another path.
-TALLY_DATA_DIR = r"\\accounts\D\Tally.ERP9_GST\Data"
+# Near-live: every CHANGE_POLL_SECONDS the listener asks Tally for the
+# company's alteration counters, which go up whenever a voucher or master
+# is saved, and syncs today once they've stopped moving -- so the
+# dashboard is a few minutes behind Tally instead of up to an hour. See
+# _TallyChangeWatch for why it asks Tally rather than watching its files.
+CHANGE_POLL_SECONDS = 120
 CHANGE_QUIET_SECONDS = 60          # wait for entries to stop changing
 CHANGE_MIN_GAP_MINUTES = 5         # and never sync more often than this
 
@@ -1603,33 +1604,47 @@ def _primary_elsewhere(control, host, now_utc):
     return None
 
 
-def _tally_data_dir():
-    try:
-        with open(os.path.join(SCRIPT_DIR, "tally_data_dir.txt")) as f:
-            return f.read().strip() or TALLY_DATA_DIR
-    except OSError:
-        return TALLY_DATA_DIR
+class _TallyChangeWatch:
+    """Tells the listener when anything has been saved in Tally, by asking
+    Tally for the company's alteration counters (AltVchId, AltMstId) --
+    one small request every CHANGE_POLL_SECONDS. Called with no useful
+    argument; returns a token that changes when Tally's data does, or None
+    when it can't tell (then the listener falls back to the hourly sync).
 
+    It used to scan Tally's data folder over the network instead. On
+    5 Oct 2026 Tally froze the moment the listener first started doing
+    that -- on a request that had worked for weeks -- and while that can't
+    be proved to be the cause, nothing that reads Tally's own files from
+    outside Tally is worth the risk. This only talks to Tally the way
+    every other request does, and never while a sync holds sync.lock, so
+    it can't land on Tally in the middle of a sync."""
 
-def _newest_data_change(data_dir):
-    """The newest modification time among the files in Tally's data folder
-    and its company folders one level down, or None if the folder can't be
-    read. Only compared with itself, never with this PC's clock, so a
-    file server whose clock is off makes no difference."""
-    newest = 0.0
-    try:
-        with os.scandir(data_dir) as top:
-            for entry in top:
-                if entry.is_file():
-                    newest = max(newest, entry.stat().st_mtime)
-                elif entry.is_dir():
-                    with os.scandir(entry.path) as inner:
-                        for f in inner:
-                            if f.is_file():
-                                newest = max(newest, f.stat().st_mtime)
-    except OSError:
-        return None
-    return newest
+    def __init__(self):
+        self.token = None
+        self.last_poll = 0.0
+        self.said_unavailable = False
+
+    def __call__(self, _unused=None):
+        if self.last_poll and time.time() - self.last_poll < CHANGE_POLL_SECONDS:
+            return self.token
+        self.last_poll = time.time()
+        today = datetime.date.today()
+        try:
+            with _exclusive_lock("sync.lock", 0):
+                root = _post_xml(_collection_request("CmpAlterIds", "Company", ["NAME", "ALTVCHID", "ALTMSTID"],
+                                                     today, today), timeout=20, max_attempts=1)
+        except TallyError:
+            return self.token          # a sync is running, or Tally is busy: keep what we had
+        for cmp in _collection_records(root, "COMPANY"):
+            name = (cmp.get("NAME") or _text(cmp, "NAME") or "").strip()
+            vch, mst = _text(cmp, "ALTVCHID"), _text(cmp, "ALTMSTID")
+            if name.lower() == TALLY_COMPANY_NAME.lower() and (vch or mst):
+                self.token = f"{vch}/{mst}"
+                return self.token
+        if not self.said_unavailable:
+            log.info("Tally didn't give its alteration counters -- syncing hourly only.")
+            self.said_unavailable = True
+        return self.token
 
 
 class _Listener:
@@ -1640,16 +1655,16 @@ class _Listener:
     What makes it sync, in order: a Sync now press; Tally's data having
     changed and then stayed quiet for CHANGE_QUIET_SECONDS (at most every
     CHANGE_MIN_GAP_MINUTES); the hourly sync during office hours, as a
-    fallback when the data folder can't be watched. All of it only on the
-    PC whose turn it is -- see _primary_elsewhere."""
+    fallback when changes can't be seen. All of it only on the PC whose
+    turn it is -- see _primary_elsewhere."""
 
-    def __init__(self, db, run_sync, role=None, data_dir=None, newest_change=_newest_data_change):
+    def __init__(self, db, run_sync, role=None, data_dir=None, newest_change=None):
         self.control = db.collection(SYNC_CONTROL_COLLECTION)
         self.run_sync = run_sync
         self.host = platform.node()
         self.role = role or _sync_role()
-        self.data_dir = data_dir or _tally_data_dir()
-        self.newest_change = newest_change
+        self.data_dir = data_dir
+        self.newest_change = newest_change or _TallyChangeWatch()
         status = self.control.document("status").get()
         status = (status.to_dict() or {}) if status.exists else {}
         self.handled_request_id = status.get("handled_request_id")
@@ -1657,12 +1672,10 @@ class _Listener:
         self.last_beat = 0.0
         self.active = self.role == "primary"
         self.last_sync = 0.0
-        # Whatever the folder looks like at start-up counts as synced; a
+        # Whatever Tally's counters say at start-up counts as synced; a
         # change from here on is what triggers a sync.
         self.synced_change = self.newest_change(self.data_dir)
         self.seen_change, self.seen_change_at = self.synced_change, 0.0
-        if self.synced_change is None:
-            log.info("Tally's data folder %s can't be read from here -- syncing hourly only.", self.data_dir)
 
     def _status(self, fields):
         self.control.document("status").set(fields, merge=True)
