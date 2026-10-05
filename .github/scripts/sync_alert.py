@@ -24,7 +24,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from daily_report_emails import IST, DASHBOARD_URL, _db, _wrap, _note, _tiles, send, e  # noqa: E402
+from daily_report_emails import IST, DASHBOARD_URL, _db, _wrap, _note, send, e  # noqa: E402
 
 # No successful sync for this long, during office hours, is a problem: the
 # listener syncs at least hourly and a few minutes after every entry, and

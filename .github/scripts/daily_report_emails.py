@@ -56,7 +56,9 @@ PENDING_PROFORMA_DOC = "pending_proforma_invoices"
 OVERDUE_DAYS = 30
 IST = ZoneInfo("Asia/Kolkata")
 
-GREEN, RED, DIM, LINE = "#167a51", "#d31a14", "#6e6358", "#e5e1dc"
+GREEN, RED = "#167a51", "#d31a14"
+NAVY, INK, DIM, LINE, ZEBRA = "#0f3d75", "#1b2430", "#5b6573", "#e3e7ee", "#f6f8fb"
+FONT = "Segoe UI,Helvetica,Arial,sans-serif"
 e = html.escape
 
 
@@ -76,52 +78,145 @@ def inr(n):
     return f"{sign}₹{s}"
 
 
+def nice_date(iso):
+    """2026-06-09 -> 09 Jun 2026, as people write it here."""
+    try:
+        return datetime.date.fromisoformat(iso).strftime("%d %b %Y")
+    except (TypeError, ValueError):
+        return iso or ""
+
+
 # --- building blocks shared by every report ---------------------------------
+#
+# The layout chosen by the owner on 5 Oct 2026, after the first emails read
+# badly in Outlook: a fixed 640 px white page with a navy header and a
+# shaded-row table on a computer, and on a phone each row as its own block
+# -- party and amount on one line, the rest underneath -- because a
+# five-column table on an iPhone squeezes the descriptions to a word a line.
+#
+# Everything is laid out with tables and inline styles, the only layout
+# desktop Outlook follows: its Word engine ignores max-width on a <div>,
+# which is why the first version's table stretched across the whole window.
+# The phone blocks are in the email too, hidden; the <style> block's media
+# query swaps them for the table on a narrow screen. Desktop Outlook never
+# applies media queries, so it always shows the table.
+_STYLE = """<style>
+@media only screen and (max-width: 620px) {
+  .page { width: 100% !important; }
+  .outer { padding: 0 !important; }
+  .pad { padding-left: 16px !important; padding-right: 16px !important; }
+  .tile { display: inline-block !important; width: 50% !important; box-sizing: border-box; padding-bottom: 8px !important; }
+  .desk { display: none !important; }
+  .mob { display: block !important; max-height: none !important; overflow: visible !important; }
+}
+</style>"""
+
 
 def _tiles(items):
-    """A row of figure boxes: items are (label, value, colour)."""
-    box = f'style="padding:10px 14px;border:1px solid {LINE};border-radius:8px"'
+    """A row of figure boxes: items are (label, value, colour). On a phone
+    they wrap two to a row."""
+    w = int(100 / max(len(items), 1))
     cells = "".join(
-        f'<td {box}><div style="color:{DIM};font-size:12px">{e(label)}</div>'
-        f'<div style="font-size:20px;font-weight:800;color:{color}">{e(value)}</div></td>'
+        f'<td class="tile" width="{w}%" style="padding:0 4px;vertical-align:top">'
+        f'<div style="background:{ZEBRA};border:1px solid {LINE};border-top:3px solid {NAVY if color == INK else color};'
+        f'border-radius:4px;padding:9px 11px">'
+        f'<div style="font-size:11px;letter-spacing:.4px;color:{DIM};font-weight:600">{e(label)}</div>'
+        f'<div style="font-size:19px;font-weight:700;color:{color};margin-top:2px;white-space:nowrap">{e(value)}</div>'
+        f'</div></td>'
         for label, value, color in items)
-    return f'<table style="border-collapse:separate;border-spacing:8px 0;margin:0 -8px 6px"><tr>{cells}</tr></table>'
+    return (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+            f'style="margin:0 0 10px"><tr>{cells}</tr></table>')
 
 
 def _note(text, warn=False):
-    return f'<p style="margin:0 0 12px;font-size:12.5px;color:{RED if warn else DIM}">{e(text)}</p>' if text else ""
+    return f'<p style="margin:0 0 12px;font-size:12px;color:{"#b42318" if warn else DIM}">{e(text)}</p>' if text else ""
+
+
+def _cards(head, rows, right):
+    """The phone version of _table: each row a block, the Party (or first)
+    column and the amount on one line, the other columns under it. A row
+    whose Days cell is red -- waiting OVERDUE_DAYS or more -- gets a red bar."""
+    main = head.index("Party") if "Party" in head else 0
+    amount = max(right) if right and head[max(right)] in ("Amount", "Closing") else None
+    out = ""
+    for r in rows:
+        if not any(str(x).strip() for j, x in enumerate(r) if j != main):
+            out += f'<div style="padding:12px 0;color:{DIM};font-size:13px;border-top:1px solid {LINE}">{r[main]}</div>'
+            continue
+        meta = []
+        for j, x in enumerate(r):
+            if j in (main, amount) or not str(x).strip():
+                continue
+            if head[j] == "Days":
+                meta.append(x.replace("d</span>", " days</span>"))
+            elif head[j] in ("", "Type", "Date", "Bank"):
+                meta.append(x)
+            else:
+                meta.append(f"{e(head[j])} {x}")
+        hot = any(head[j] == "Days" and RED in r[j] for j in range(len(r)))
+        price = (f'<td align="right" style="font-size:15px;font-weight:700;color:{INK};white-space:nowrap;'
+                 f'vertical-align:top;padding-left:10px">{r[amount]}</td>') if amount is not None else ""
+        out += (f'<div style="border-top:1px solid {LINE};padding:11px 0 11px '
+                f'{"10px;border-left:3px solid " + RED if hot else "0"}">'
+                f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+                f'<td style="font-size:14px;color:{INK};vertical-align:top">{r[main]}</td>{price}</tr></table>'
+                f'<div style="font-size:12px;color:{DIM};margin-top:4px">{" &nbsp;·&nbsp; ".join(meta)}</div></div>')
+    return out
 
 
 def _table(head, rows, right=()):
     """head: column titles; rows: lists of HTML-ready cells; right: indexes
-    of columns to right-align (amounts)."""
-    th = "".join(f'<th style="padding:6px 8px;text-align:{"right" if i in right else "left"}">{e(h)}</th>'
-                 for i, h in enumerate(head))
-    def td(i, x):
-        style = f"padding:6px 8px;border-bottom:1px solid {LINE};vertical-align:top"
-        if i in right:
-            style += ";text-align:right;white-space:nowrap;font-family:Consolas,monospace"
-        return f'<td style="{style}">{x}</td>'
-    body = "".join("<tr>" + "".join(td(i, x) for i, x in enumerate(r)) + "</tr>" for r in rows)
-    return (f'<table style="border-collapse:collapse;width:100%;font-size:13.5px;margin-bottom:14px">'
-            f'<tr style="background:#eef2f8">{th}</tr>{body}</table>')
+    of columns to right-align (amounts). The table on a computer, _cards on
+    a phone -- both are in the email, see _STYLE."""
+    th = "".join(
+        f'<th style="background:{NAVY};color:#ffffff;font-size:11.5px;font-weight:600;letter-spacing:.3px;'
+        f'padding:8px 10px;text-align:{"right" if i in right else "left"}">{e(h)}</th>'
+        for i, h in enumerate(head))
+    body = ""
+    for n, r in enumerate(rows):
+        bg = ZEBRA if n % 2 else "#ffffff"
+        body += "<tr>" + "".join(
+            f'<td style="background:{bg};padding:9px 10px;border-bottom:1px solid {LINE};vertical-align:top;font-size:13px;'
+            f'{"text-align:right;white-space:nowrap;font-weight:600" if i in right else ""}">{x}</td>'
+            for i, x in enumerate(r)) + "</tr>"
+    return (f'<table class="desk" role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+            f'style="border-collapse:collapse;margin:6px 0 14px"><tr>{th}</tr>{body}</table>'
+            f'<div class="mob" style="display:none;max-height:0;overflow:hidden;mso-hide:all;margin:6px 0 14px">'
+            f'{_cards(head, rows, right)}</div>')
 
 
 def _party_cell(v):
-    return (f"<b>{e(v.get('party') or '(no party)')}</b><br>"
-            f"<span style=\"color:{DIM};font-size:12px\">{e(v.get('description') or '')}</span>")
+    return (f'<div style="font-weight:600">{e(v.get("party") or "(no party)")}</div>'
+            f'<div style="color:{DIM};font-size:12px;margin-top:2px">{e(v.get("description") or "")}</div>')
+
+
+def _date_cell(iso):
+    return f'<span style="white-space:nowrap">{e(nice_date(iso))}</span>'
 
 
 def _wrap(report_name, label, body):
-    return (
-        '<div style="font-family:Segoe UI,Arial,sans-serif;color:#161311;max-width:680px">'
-        '<div style="border-bottom:2px solid #14539a;padding-bottom:8px;margin-bottom:12px">'
-        f'<img src="{LOGO_URL}" alt="" height="34" style="height:34px;margin-right:10px;vertical-align:middle">'
-        '<span style="vertical-align:middle;display:inline-block"><b style="font-size:17px">R. S. Infotech</b><br>'
-        f'<span style="font-size:13px;color:{DIM}">{e(report_name)} · {e(label)}</span></span></div>'
-        f'{body}'
-        f'<p style="margin-top:16px;font-size:12px;color:{DIM}">From the dashboard: <a href="{DASHBOARD_URL}">{DASHBOARD_URL}</a></p>'
-        '</div>')
+    """The whole email: navy header, title, body, footer with the dashboard
+    button, on a 640 px page."""
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">{_STYLE}</head>
+<body style="margin:0;padding:0;background:#eef1f5">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef1f5;font-family:{FONT}">
+<tr><td class="outer" align="center" style="padding:24px 12px">
+<table class="page" role="presentation" width="640" cellpadding="0" cellspacing="0" style="width:640px;background:#ffffff;border:1px solid #d9dee6">
+<tr><td class="pad" style="background:{NAVY};padding:16px 24px">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+  <td style="vertical-align:middle"><img src="{LOGO_URL}" width="30" height="30" alt="" style="width:30px;height:30px;vertical-align:middle;background:#ffffff;border-radius:4px;padding:2px">
+  <span style="color:#ffffff;font-size:17px;font-weight:700;vertical-align:middle;padding-left:10px">R. S. Infotech</span></td>
+  <td align="right" style="color:#b9c8de;font-size:12px;vertical-align:middle">Report from Tally</td></tr></table>
+</td></tr>
+<tr><td class="pad" style="padding:22px 24px 4px">
+  <div style="font-size:21px;font-weight:700;color:{INK}">{e(report_name)}</div>
+  <div style="font-size:13px;color:{DIM};margin-top:3px">{e(label)}</div></td></tr>
+<tr><td class="pad" style="padding:14px 20px 22px;color:{INK};font-size:13px">{body}</td></tr>
+<tr><td class="pad" style="padding:16px 24px;background:#f7f9fb;border-top:1px solid {LINE}">
+  <a href="{DASHBOARD_URL}" style="display:inline-block;background:{NAVY};color:#ffffff;text-decoration:none;font-size:13px;font-weight:600;padding:9px 16px;border-radius:4px">Open dashboard</a>
+  <div style="font-size:11.5px;color:{DIM};margin-top:10px">Sent automatically from R. S. Infotech's Tally data.</div></td></tr>
+</table></td></tr></table></body></html>"""
 
 
 def _balance_state(bal):
@@ -155,9 +250,9 @@ def _money_report(report, key, balance_key, in_dir, noun, show_ledger):
               f"Closing: {inr(bal['closing'])}" if ok else f"Net:     {inr(money_in - money_out)}",
               f"{noun.capitalize()}s: {len(rows)}"] + ([note] if note else [])
 
-    tiles = ([("OPENING", inr(bal["opening"]), "#161311")] if ok else []) + [
+    tiles = ([("OPENING", inr(bal["opening"]), INK)] if ok else []) + [
         ("IN", inr(money_in), GREEN), ("OUT", inr(money_out), RED),
-        ("CLOSING", inr(bal["closing"]), "#161311") if ok else ("NET", inr(money_in - money_out), "#161311")]
+        ("CLOSING", inr(bal["closing"]), INK) if ok else ("NET", inr(money_in - money_out), INK)]
     body = _tiles(tiles) + _note(f"{len(rows)} {noun}{'s' if len(rows) != 1 else ''}")
     if note:
         body += _note(note, warn=True)
@@ -204,8 +299,8 @@ def _entries_report(report, key, books_key, title):
             if known else "The before-GST figure appears once this day is re-synced from Tally.")
     lines = ([f"{title} before GST: {inr(before_gst)}  (Tally's {title} Accounts)"] if known else []) + [
         f"Total with GST:  {inr(with_gst)}", f"Entries: {len(rows)}"] + ([] if known else [note])
-    tiles = ([("BEFORE GST", inr(before_gst), "#161311")] if known else []) + [
-        ("WITH GST", inr(with_gst), "#161311"), ("ENTRIES", str(len(rows)), "#161311")]
+    tiles = ([("BEFORE GST", inr(before_gst), INK)] if known else []) + [
+        ("WITH GST", inr(with_gst), INK), ("ENTRIES", str(len(rows)), INK)]
     body = _tiles(tiles) + _note(note)
 
     lines.append("")
@@ -234,20 +329,20 @@ def _pending_report(rows, today, noun, with_amount):
     oldest = rows[0].get("date") if rows else ""
 
     lines = [f"Pending: {len(rows)}"] + ([f"Value with GST: {inr(value)}"] if with_amount else []) + [
-        f"Waiting {OVERDUE_DAYS}+ days: {len(overdue)}"] + ([f"Oldest: {oldest}"] if oldest else []) + [""]
+        f"Waiting {OVERDUE_DAYS}+ days: {len(overdue)}"] + ([f"Oldest: {nice_date(oldest)}"] if oldest else []) + [""]
     for r in rows:
         a = age(r)
-        lines.append(f"{r.get('date') or '':<10}  {str(a) + 'd' if a is not None else '':>5}  "
+        lines.append(f"{nice_date(r.get('date')):<11}  {str(a) + 'd' if a is not None else '':>5}  "
                      + (f"{inr(r.get('amount')):>12}  " if with_amount else "")
                      + f"{r.get('party') or '(no party)'} -- {r.get('description') or ''} ({r.get('voucher_no') or ''})")
     if not rows:
         lines.append(f"No pending {noun}s.")
 
-    tiles = [("PENDING", str(len(rows)), RED if rows else "#161311")]
+    tiles = [("PENDING", str(len(rows)), RED if rows else INK)]
     if with_amount:
-        tiles.append(("VALUE WITH GST", inr(value), "#161311"))
-    tiles.append((f"{OVERDUE_DAYS}+ DAYS OLD", str(len(overdue)), RED if overdue else "#161311"))
-    body = _tiles(tiles) + _note(f"Oldest first. Days = days since its date in Tally." if rows else "")
+        tiles.append(("VALUE WITH GST", inr(value), INK))
+    tiles.append((f"{OVERDUE_DAYS}+ DAYS OLD", str(len(overdue)), RED if overdue else INK))
+    body = _tiles(tiles) + _note("Oldest first. Days = days since its date in Tally." if rows else "")
 
     def age_cell(r):
         a = age(r)
@@ -255,7 +350,7 @@ def _pending_report(rows, today, noun, with_amount):
             return ""
         return f'<span style="font-weight:700;color:{RED if a >= OVERDUE_DAYS else DIM}">{a}d</span>'
     head = ["Date", "Days", "Party", "Voucher No"] + (["Amount"] if with_amount else [])
-    table_rows = [[e(r.get("date") or ""), age_cell(r), _party_cell(r), e(r.get("voucher_no") or "")]
+    table_rows = [[_date_cell(r.get("date")), age_cell(r), _party_cell(r), e(r.get("voucher_no") or "")]
                   + ([e(inr(r.get("amount")))] if with_amount else []) for r in rows]
     if not rows:
         table_rows = [[f"No pending {noun}s.", "", "", ""] + ([""] if with_amount else [])]
