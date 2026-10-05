@@ -92,7 +92,7 @@ PERIOD_NAMES = ("weekly", "monthly", "quarterly", "half_yearly", "yearly")
 PENDING_PROFORMA_DOC = "pending_proforma_invoices"
 
 # Every party's balance under Sundry Debtors and Sundry Creditors, as of the
-# latest sync, as one document -- see _Books.party_balances. Kept in
+# latest sync, as one document -- see fetch_party_balances. Kept in
 # PERIOD_COLLECTION for the same reason as the Proforma list.
 PARTY_BALANCES_DOC = "sundry_balances"
 
@@ -105,34 +105,33 @@ STOCK_MIN_HOURS = 3
 # which request did it, the item-wise stock read -- the one with a crash
 # already against it -- stays off. The tile says it hasn't been read.
 STOCK_ENABLED = False
-# Cash and bank balances are asked for only for days this recent. Each
-# ask makes Tally total every ledger up to that day, and a full-year
-# re-sync asking it for all 187 days was part of the load that hung Tally
-# on 5 Oct; the daily emails only ever need yesterday's.
-BALANCE_DAYS = 8
 # Balances -- cash and bank opening/closing for the daily emails, and every
-# party's balance for the Sundry Debtors/Creditors tiles -- are worked out
-# here, from each ledger's opening balance plus the vouchers the sync
-# already has (see _Books). They used to be asked of Tally as every
-# ledger's CLOSINGBALANCE, and that is what froze Tally on 5 Oct 2026: the
-# per-request log showed "Tally -> ledger_balances_2026-09-26" with no
-# answer in 120 s, right after 180 daily P&L requests had each come back
-# in under a second. Opening balances are values Tally keeps on each
-# ledger, not something it adds up, and they're read at most once a day by
-# the scheduled run, kept in OPENINGS_FILE, and reused by every other sync.
-OPENINGS_FILE = "ledger_openings.json"
-OPENINGS_TIMEOUT_SECONDS = 60
-OPENINGS_PAUSE_DAYS = 7
-# Off: the first --test-balances on the laptop (5 Oct) hung Tally too, so
-# no sync asks Tally for opening balances until that request is shown to be
-# safe. Python giving up after OPENINGS_TIMEOUT_SECONDS doesn't help Tally,
-# which carries on working the answer out with nobody waiting for it. While
-# this is off the syncs use a saved OPENINGS_FILE if there is one, and
-# otherwise leave the balances out rather than ask.
-OPENINGS_FROM_TALLY = False
-# Voucher base types that post to the books. Orders, delivery and receipt
-# notes, stock journals, memorandum and reversing journals don't, and
-# neither does an optional or cancelled voucher of any type.
+# party's balance for the Sundry Debtors/Creditors tiles -- come from
+# Tally's own Group Summary report, one group at a time (fetch_group_summary).
+# On 5 Oct 2026 every per-ledger balance request hung Tally: a Ledger
+# collection with CLOSINGBALANCE, and then one with only OPENINGBALANCE,
+# which in this company Tally also works out from the earlier years. Python
+# giving up after its time limit doesn't help -- Tally carries on with the
+# request nobody is waiting for. The same morning the Group Summary answered
+# in 0.1 s for Bank Accounts, 1.6 s for Sundry Creditors (70 lines) and
+# 5.3 s for Sundry Debtors (154 lines), like the Profit and Loss report,
+# which has always answered in under a second.
+#
+# Even so, it's asked for sparingly: cash and bank only for days this
+# recent (the daily emails only ever need yesterday's), debtors and
+# creditors at most every PARTY_BALANCES_EVERY_MINUTES outside the daily
+# run, one attempt each, and after Tally fails to answer one in time, none
+# is asked for again for BALANCES_PAUSE_HOURS.
+BALANCE_DAYS = 8
+GROUP_SUMMARY_TIMEOUT_SECONDS = 30
+PARTY_BALANCES_EVERY_MINUTES = 60
+BALANCES_PAUSE_HOURS = 12
+BALANCES_PAUSE_FILE = "balances_paused_until.txt"
+PARTY_BALANCES_MARKER = "party_balances_at.txt"
+# Voucher base types that post to the books, for the check that a day's
+# opening + its entries = its closing. Orders, delivery and receipt notes,
+# stock journals, memorandum and reversing journals don't post, and neither
+# does an optional or cancelled voucher of any type.
 ACCOUNTING_BASES = {"sales", "purchase", "payment", "receipt", "contra", "journal", "credit note", "debit note"}
 STOCK_PAUSE_DAYS = 7
 STOCK_TIMEOUT_SECONDS = 120
@@ -173,6 +172,12 @@ log = logging.getLogger("tally_sync")
 
 class TallyError(RuntimeError):
     pass
+
+
+class TallyTimeout(TallyError):
+    """Tally was reachable but didn't answer in time -- it may still be
+    working on the request, so the balance reads pause after one of these
+    (see _GroupBalances). Tally being closed is a plain TallyError."""
 
 
 def _sanitize_xml_text(raw_bytes):
@@ -258,7 +263,7 @@ def _post_xml(xml_request, dump_raw_dir=None, dump_name=None, timeout=None, max_
                 f"loaded, and the HTTP/XML gateway enabled (F1 > Settings > Connectivity)? ({e})"
             )
         except requests.exceptions.Timeout:
-            last_error = TallyError(f"Tally did not respond within {timeout}s.")
+            last_error = TallyTimeout(f"Tally did not respond within {timeout}s.")
         if attempt < max_attempts:
             log.warning("Attempt %d/%d failed (%s) -- retrying in 5s...", attempt, max_attempts, last_error)
             time.sleep(5)
@@ -391,6 +396,12 @@ def _num(el, tag, default=0.0):
 # Report builders
 # ---------------------------------------------------------------------------
 
+# Every ledger's group as Tally names it, kept from the ledger list each
+# sync already fetches: which Group Summary to ask for a cash or bank
+# ledger's balance, and the group shown beside each party.
+_LEDGER_PARENTS = {}
+
+
 def _fetch_ledger_names_under(date, wanted_parents, dump_raw_dir=None, dump_name="ledger_list"):
     """Ledgers parented directly under any of wanted_parents (lowercase).
     Shared by the Cash-in-Hand lookup (below) and the Bank Accounts lookup
@@ -401,6 +412,8 @@ def _fetch_ledger_names_under(date, wanted_parents, dump_raw_dir=None, dump_name
     root_el = _post_xml(xml_req, dump_raw_dir, dump_name)
     names = set()
     for led in _collection_records(root_el, "LEDGER"):
+        if led.get("NAME") or _text(led, "NAME"):
+            _LEDGER_PARENTS[(led.get("NAME") or _text(led, "NAME")).strip()] = _text(led, "PARENT").strip()
         parent = _text(led, "PARENT").strip().lower()
         if parent in wanted_parents:
             name = led.get("NAME") or _text(led, "NAME")
@@ -930,59 +943,12 @@ def push_to_firestore(date_iso, payload):
     db.collection(FIRESTORE_COLLECTION).document(date_iso).set(payload)
 
 
-def _groups_under(group_parents, root):
-    """Every group (lowercase) whose chain of parents reaches root, root
-    itself included -- so a party filed under a sub-group of Sundry Debtors
-    (say "Debtors - Ahmedabad") still counts as a debtor."""
-    found = {root}
-    for group in group_parents:
-        seen, g = set(), group
-        while g and g not in seen:
-            if g == root:
-                found.add(group)
-                break
-            seen.add(g)
-            g = group_parents.get(g, "")
-    return found
-
-
 def push_party_balances(balances):
     _firestore_db().collection(PERIOD_COLLECTION).document(PARTY_BALANCES_DOC).set(
         {**balances, "as_of": datetime.datetime.now(datetime.timezone.utc).isoformat()})
 
 
-def fetch_ledger_openings(date, dump_raw_dir=None):
-    """Every ledger's opening balance for the financial year date falls in,
-    with the group it's under, and the group tree -- the starting point
-    _Books works balances out from. Only values Tally keeps on the masters
-    are asked for (NAME, PARENT, OPENINGBALANCE), as of the first day of
-    the year, so Tally has nothing to add up. One attempt each, with a
-    short limit: this replaced the request that froze Tally, and nothing
-    here is retried. Opening balances are debit-positive (Tally writes a
-    debit as a negative number)."""
-    fy = _fy_start(date)
-    groups_root = _post_xml(_collection_request("GroupTree", "Group", ["NAME", "PARENT"], fy, fy),
-                            dump_raw_dir, "group_tree", timeout=OPENINGS_TIMEOUT_SECONDS, max_attempts=1)
-    ledgers_root = _post_xml(_collection_request("LedgerOpenings", "Ledger", ["NAME", "PARENT", "OPENINGBALANCE"], fy, fy),
-                             dump_raw_dir, "ledger_openings", timeout=OPENINGS_TIMEOUT_SECONDS, max_attempts=1)
-    groups = {}
-    for grp in _collection_records(groups_root, "GROUP"):
-        name = (grp.get("NAME") or _text(grp, "NAME") or "").strip().lower()
-        if name:
-            groups[name] = _text(grp, "PARENT").strip().lower()
-    ledgers = {}
-    for led in _collection_records(ledgers_root, "LEDGER"):
-        name = (led.get("NAME") or _text(led, "NAME") or "").strip()
-        if name:
-            ledgers[name] = {"parent": _text(led, "PARENT").strip(), "opening": round(-_num(led, "OPENINGBALANCE"), 2)}
-    # A company Tally can't read answers with empty lists, not an error.
-    if not ledgers or "sundry debtors" not in groups:
-        raise TallyError("No ledgers or no Sundry Debtors group returned. " + UNREADABLE_COMPANY_HINT)
-    return {"fy_start": fy.isoformat(), "read_on": datetime.date.today().isoformat(),
-            "groups": groups, "ledgers": ledgers}
-
-
-def fetch_group_summary(group, upto, dump_raw_dir=None, timeout=30):
+def fetch_group_summary(group, upto, dump_raw_dir=None, timeout=GROUP_SUMMARY_TIMEOUT_SECONDS):
     """Tally's own Group Summary report for one group, as at upto: each line
     under it (a ledger, or a sub-group as one line) with its closing balance,
     debit-positive. A report rather than a Ledger collection because on
@@ -1030,127 +996,138 @@ def fetch_group_summary(group, upto, dump_raw_dir=None, timeout=30):
     return lines
 
 
-def _load_openings(fy_start):
-    try:
-        with open(os.path.join(SCRIPT_DIR, OPENINGS_FILE), encoding="utf-8") as f:
-            data = json.load(f)
-        return data if data.get("fy_start") == fy_start.isoformat() else None
-    except (OSError, ValueError):
-        return None
-
-
-def get_ledger_openings(date, may_ask_tally, dry_run=False, dump_raw_dir=None):
-    """The opening balances for date's financial year: from OPENINGS_FILE,
-    refreshed from Tally at most once a day and only when may_ask_tally --
-    the once-a-day scheduled run. Every other sync uses the saved copy.
-    After a failed read Tally isn't asked again for OPENINGS_PAUSE_DAYS.
-    None when there's no copy for this year yet."""
-    fy = _fy_start(date)
-    saved = _load_openings(fy)
-    if not OPENINGS_FROM_TALLY or not may_ask_tally or (saved and saved.get("read_on") == datetime.date.today().isoformat()):
-        return saved
-    paused_until = _read_marker("openings_paused_until.txt")
-    if paused_until and paused_until > datetime.datetime.now():
-        log.info("Opening balances not asked for until %s after an earlier failure.", paused_until.date())
-        return saved
-    try:
-        data = fetch_ledger_openings(date, dump_raw_dir)
-    except TallyError as e:
-        until = datetime.datetime.now() + datetime.timedelta(days=OPENINGS_PAUSE_DAYS)
-        log.warning("Opening balances not read (%s) -- not asking again until %s.", e, until.date())
-        if not dry_run:
-            _write_marker("openings_paused_until.txt", until)
-        return saved
-    log.info("Opening balances read: %d ledgers, %d groups.", len(data["ledgers"]), len(data["groups"]))
-    if not dry_run:
-        with open(os.path.join(SCRIPT_DIR, OPENINGS_FILE), "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-    return data
-
-
 def _affects_books(v, type_parents):
     base = type_parents.get(_text(v, "VOUCHERTYPENAME").strip().lower())
     return (base in ACCOUNTING_BASES and _text(v, "ISOPTIONAL").lower() != "yes"
             and _text(v, "ISCANCELLED").lower() != "yes")
 
 
-class _Books:
-    """Ledger balances worked out from the opening balances and the year's
-    vouchers, debit positive: a ledger's balance on a day is its opening
-    plus every entry on it, in vouchers that post to the books, up to and
-    including that day. Nothing here asks Tally anything."""
+class _GroupBalances:
+    """Group Summary closing balances for one sync, each group and day asked
+    of Tally once and reused -- a day's closing is the next day's opening,
+    and cash and bank share nothing else. After Tally fails to answer one in
+    time no more are asked for, in this sync or for BALANCES_PAUSE_HOURS
+    after: a Tally that's struggling isn't asked again every few minutes."""
 
-    def __init__(self, openings, vouchers, type_parents):
-        self.groups = openings["groups"]
-        self.ledgers = openings["ledgers"]
-        self.moves = {}            # ledger -> {date_iso: debit-positive amount}
-        for v in vouchers:
-            if not _affects_books(v, type_parents):
-                continue
-            day = _tally_date_to_iso(_text(v, "DATE"))
-            for entry in v.findall(".//ALLLEDGERENTRIES.LIST"):
-                name = (entry.get("NAME") or _text(entry, "LEDGERNAME") or "").strip()
-                if name:
-                    per_day = self.moves.setdefault(name, {})
-                    per_day[day] = per_day.get(day, 0.0) - _num(entry, "AMOUNT")
+    def __init__(self, dump_raw_dir=None):
+        self.dump_raw_dir = dump_raw_dir
+        self.cache = {}
+        until = _read_marker(BALANCES_PAUSE_FILE)
+        self.stopped = (f"paused until {until:%d %b %H:%M} after Tally didn't answer in time"
+                        if until and until > datetime.datetime.now() else None)
 
-    def balance(self, ledger, upto):
-        upto_iso = upto.isoformat()
-        opening = (self.ledgers.get(ledger) or {}).get("opening", 0.0)
-        return opening + sum(a for d, a in (self.moves.get(ledger) or {}).items() if d <= upto_iso)
+    def closing(self, group, date):
+        """{line name: closing balance, debit positive} for group at the end of date."""
+        if self.stopped:
+            raise TallyError(f"Balances not asked for -- {self.stopped}.")
+        key = (group.lower(), date)
+        if key not in self.cache:
+            try:
+                lines = fetch_group_summary(group, date, self.dump_raw_dir)
+            except TallyTimeout as e:
+                until = datetime.datetime.now() + datetime.timedelta(hours=BALANCES_PAUSE_HOURS)
+                _write_marker(BALANCES_PAUSE_FILE, until)
+                self.stopped = f"paused until {until:%d %b %H:%M} after Tally didn't answer in time"
+                log.warning("Balances paused until %s: %s", until, e)
+                raise
+            self.cache[key] = {line["name"]: line["closing"] for line in lines}
+        return self.cache[key]
 
-    def day_balances(self, ledger_names, date):
-        """Opening and closing for one day across ledger_names -- cash in
-        hand, or money in the bank -- in total and per ledger, in the shape
-        the daily emails read. Opening is the closing at the end of the day
-        before, as on Tally's Cash and Bank Books."""
-        before = date - datetime.timedelta(days=1)
-        per = {n: {"opening": round(self.balance(n, before), 2), "closing": round(self.balance(n, date), 2)}
+
+def _ledger_movement(vouchers, ledger_names, type_parents):
+    """The day's net change across ledger_names from its own vouchers that
+    post to the books, debits (money in) positive. A transfer between two
+    of them -- cash to petty cash, one bank to another -- nets to nothing."""
+    total = 0.0
+    for v in vouchers:
+        if not _affects_books(v, type_parents):
+            continue
+        for entry in v.findall(".//ALLLEDGERENTRIES.LIST"):
+            if (entry.get("NAME") or _text(entry, "LEDGERNAME") or "").strip() in ledger_names:
+                total -= _num(entry, "AMOUNT")
+    return total
+
+
+def _balance_for(date, vouchers, ledger_names, type_parents, balances, what):
+    """Opening and closing across ledger_names for one day -- cash in hand,
+    or money in the bank -- in total and per ledger, from the Group Summary
+    of each group they're under. Opening is the closing at the end of the
+    day before, as on Tally's Cash and Bank Books.
+
+    "matches" is the check that opening + the day's entries = closing to
+    the rupee; the daily emails print the balances only when it holds. A
+    failure here never stops the rest of the day's sync."""
+    groups = sorted({_LEDGER_PARENTS[n] for n in ledger_names if _LEDGER_PARENTS.get(n)})
+    if not groups:
+        return None
+    before, after = {}, {}
+    try:
+        for group in groups:
+            before.update(balances.closing(group, date - datetime.timedelta(days=1)))
+            after.update(balances.closing(group, date))
+    except TallyError as e:
+        log.warning("%s: %s balances not read -- %s", date, what, e)
+        return {"error": str(e)}
+    ledgers = {n: {"opening": round(before.get(n, 0.0), 2), "closing": round(after.get(n, 0.0), 2)}
                for n in sorted(ledger_names)}
-        opening = round(sum(b["opening"] for b in per.values()), 2)
-        closing = round(sum(b["closing"] for b in per.values()), 2)
-        return {"opening": opening, "closing": closing, "movement": round(closing - opening, 2),
-                "matches": True, "ledgers": per, "source": "opening balances + vouchers"}
-
-    def party_balances(self, date):
-        """Every party's balance under Sundry Debtors and Sundry Creditors
-        (sub-groups included) on date, for the dashboard's two tiles.
-        Debtors read as receivable and creditors as payable, so both totals
-        are positive the way they're spoken of; a customer's advance or a
-        supplier's debit note comes out negative and reduces the total, as
-        in Tally. Nil balances are left out."""
-        result = {}
-        for key, root, sign in (("debtors", "sundry debtors", 1), ("creditors", "sundry creditors", -1)):
-            under = _groups_under(self.groups, root)
-            parties = []
-            for name, led in self.ledgers.items():
-                if led.get("parent", "").lower() not in under:
-                    continue
-                amount = round(sign * self.balance(name, date), 2)
-                if abs(amount) >= 0.5:
-                    parties.append({"name": name, "group": led.get("parent", ""), "amount": amount})
-            parties.sort(key=lambda r: -r["amount"])
-            result[key] = {"total": round(sum(r["amount"] for r in parties), 2), "count": len(parties),
-                           "parties": parties, "tally_total": None, "matches": None,
-                           "source": "opening balances + vouchers"}
-        return result
+    opening = round(sum(b["opening"] for b in ledgers.values()), 2)
+    closing = round(sum(b["closing"] for b in ledgers.values()), 2)
+    movement = round(_ledger_movement(vouchers, ledger_names, type_parents), 2)
+    matches = abs(opening + movement - closing) < 1
+    if not matches:
+        log.warning("%s: %s balances don't tie -- opening %.2f + movement %.2f != closing %.2f",
+                    date, what, opening, movement, closing)
+    return {"opening": opening, "closing": closing, "movement": movement, "matches": matches,
+            "ledgers": ledgers, "source": "Tally Group Summary"}
 
 
-def _sync_party_balances(books, dry_run=False):
-    """Stores today's Sundry Debtors/Creditors from books. Never stops the
-    sync."""
-    if books is None:
-        log.info("Sundry debtors/creditors not worked out -- no opening balances read yet.")
-        return
-    balances = books.party_balances(datetime.date.today())
-    log.info("Sundry debtors Rs.%s (%d parties) | Sundry creditors Rs.%s (%d parties)",
-             balances["debtors"]["total"], balances["debtors"]["count"],
-             balances["creditors"]["total"], balances["creditors"]["count"])
-    if dry_run:
-        print(json.dumps(balances, indent=2, ensure_ascii=False))
+def fetch_party_balances(date, balances):
+    """Every line under Sundry Debtors and Sundry Creditors at the end of
+    date, from Tally's Group Summary of each, for the dashboard's two tiles.
+    A party filed under a sub-group shows as that sub-group's one line, as
+    on Tally's own screen. Debtors read as receivable and creditors as
+    payable, so both totals are positive the way they're spoken of; a
+    customer's advance or a supplier's debit note comes out negative and
+    reduces the total, as in Tally. Nil balances are left out."""
+    result = {}
+    for key, group, sign in (("debtors", "Sundry Debtors", 1), ("creditors", "Sundry Creditors", -1)):
+        lines = balances.closing(group, date)
+        # A company Tally can't read answers with nothing, not an error --
+        # on 5 Oct an empty answer wrote Rs.0 over the real figures.
+        if key == "debtors" and not lines:
+            raise TallyError("Sundry Debtors came back empty. " + UNREADABLE_COMPANY_HINT)
+        parties = [{"name": name, "group": _LEDGER_PARENTS.get(name) or "Sub-group", "amount": round(sign * amount, 2)}
+                   for name, amount in lines.items() if abs(amount) >= 0.5]
+        parties.sort(key=lambda r: -r["amount"])
+        total = round(sum(r["amount"] for r in parties), 2)
+        result[key] = {"total": total, "count": len(parties), "parties": parties,
+                       "tally_total": total, "matches": True, "source": "Tally Group Summary"}
+    return result
+
+
+def _sync_party_balances(balances, dry_run=False, force=False):
+    """Reads and stores today's Sundry Debtors/Creditors: on every daily
+    run (force), otherwise at most every PARTY_BALANCES_EVERY_MINUTES.
+    A failure is logged and leaves the last stored figures in place -- it
+    never stops the sync."""
+    last = _read_marker(PARTY_BALANCES_MARKER)
+    if not force and last and datetime.datetime.now() - last < datetime.timedelta(minutes=PARTY_BALANCES_EVERY_MINUTES):
+        log.info("Sundry debtors/creditors last read at %s -- not asked again yet.", f"{last:%H:%M}")
         return
     try:
-        push_party_balances(balances)
+        result = fetch_party_balances(datetime.date.today(), balances)
+    except TallyError as e:
+        log.warning("Sundry debtors/creditors not read -- %s", e)
+        return
+    log.info("Sundry debtors Rs.%s (%d parties) | Sundry creditors Rs.%s (%d parties)",
+             result["debtors"]["total"], result["debtors"]["count"],
+             result["creditors"]["total"], result["creditors"]["count"])
+    if dry_run:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return
+    try:
+        push_party_balances(result)
+        _write_marker(PARTY_BALANCES_MARKER, datetime.datetime.now())
     except Exception as e:
         log.warning("Sundry debtors/creditors not written -- %s", e)
 
@@ -1430,7 +1407,10 @@ def sync_period_reports(from_date, to_date, dry_run=False, dump_raw_dir=None):
 
 
 def _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, bank_ledgers, dump_raw_dir=None,
-                   books=None):
+                   balances=None):
+    recent = balances is not None and (datetime.date.today() - date).days <= BALANCE_DAYS
+    cash_balance = _balance_for(date, vouchers, cash_ledgers, voucher_type_parents, balances, "cash") if recent else None
+    bank_balance = _balance_for(date, vouchers, bank_ledgers, voucher_type_parents, balances, "bank") if recent else None
     payload = {
         "date": date.strftime("%Y-%m-%d"),
         "synced_at": datetime.datetime.now().isoformat(),
@@ -1439,9 +1419,8 @@ def _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, bank_ledg
         "purchase": _filter_by_class(vouchers, voucher_type_parents, "purchase"),
         "profit_and_loss": fetch_profit_and_loss(date, dump_raw_dir),
         "cash_vouchers": _cash_vouchers_from(vouchers, cash_ledgers),
-        **({"cash_balance": books.day_balances(cash_ledgers, date),
-            "bank_balance": books.day_balances(bank_ledgers, date)}
-           if books is not None and (datetime.date.today() - date).days <= BALANCE_DAYS else {}),
+        **({"cash_balance": cash_balance} if cash_balance is not None else {}),
+        **({"bank_balance": bank_balance} if bank_balance is not None else {}),
         "bank_vouchers": _bank_vouchers_from(vouchers, bank_ledgers),
     }
     log.info(
@@ -1505,12 +1484,9 @@ def run(date, dry_run=False, dump_raw_dir=None):
         raise TallyError("No vouchers at all in the whole financial year. " + UNREADABLE_COMPANY_HINT)
     wanted = _fmt_date(date)
     vouchers = [v for v in all_vouchers if _text(v, "DATE") == wanted]
-    # Balances from the opening balances the scheduled run saved -- this
-    # sync runs all day and never asks Tally for them itself.
-    openings = get_ledger_openings(date, may_ask_tally=False)
-    books = _Books(openings, all_vouchers, voucher_type_parents) if openings else None
+    balances = _GroupBalances(dump_raw_dir)
 
-    payload = _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, bank_ledgers, dump_raw_dir, books)
+    payload = _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, bank_ledgers, dump_raw_dir, balances)
     delivery_challans = _delivery_challan_records(all_vouchers, voucher_type_parents)
     proformas = _pending_proforma_records(all_vouchers)
 
@@ -1531,8 +1507,7 @@ def run(date, dry_run=False, dump_raw_dir=None):
               "%d pending proforma invoices)",
               FIRESTORE_COLLECTION, date_iso, len(delivery_challans), removed, listed)
     sync_period_reports(date, date, dump_raw_dir=dump_raw_dir)
-    # Worked out here, so cheap enough to keep current on every sync.
-    _sync_party_balances(books)
+    _sync_party_balances(balances)
     # Stock is left to the once-a-day scheduled run (run_backfill): this
     # one runs for every Sync now press, every change in Tally and every
     # hour, and valuing every stock item is too heavy to repeat all day on
@@ -1568,8 +1543,7 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
         raise TallyError("No vouchers at all in the whole financial year. " + UNREADABLE_COMPANY_HINT)
 
     all_vouchers = [v for day_vouchers in vouchers_by_date.values() for v in day_vouchers]
-    openings = get_ledger_openings(to_date, may_ask_tally=True, dry_run=dry_run, dump_raw_dir=dump_raw_dir)
-    books = _Books(openings, all_vouchers, voucher_type_parents) if openings else None
+    balances = _GroupBalances(dump_raw_dir)
 
     succeeded = 0
     failed = []
@@ -1579,7 +1553,7 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
         try:
             vouchers = vouchers_by_date.get(_fmt_date(cur), [])
             payload = _build_payload(cur, vouchers, voucher_type_parents, cash_ledgers, bank_ledgers, dump_raw_dir,
-                                     books)
+                                     balances)
             if not dry_run:
                 push_to_firestore(date_str, payload)
             succeeded += 1
@@ -1606,7 +1580,7 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
               succeeded, day_count, f", {len(failed)} failed ({', '.join(failed)})" if failed else "",
               len(delivery_challans), removed, listed)
     sync_period_reports(from_date, to_date, dry_run=dry_run, dump_raw_dir=dump_raw_dir)
-    _sync_party_balances(books, dry_run=dry_run)
+    _sync_party_balances(balances, dry_run=dry_run, force=True)
     # As of today, like the party balances; the backfill's last day is
     # yesterday, so there's no P&L for today at hand to check it against.
     if STOCK_ENABLED:
@@ -1930,38 +1904,6 @@ def _record_result(ok, message, dry_run=False):
         log.warning("Sync outcome not recorded -- %s", e)
 
 
-def run_test_balances():
-    """--test-balances: reads the opening balances from Tally the way the
-    daily sync will, works out today's balances, and prints them next to
-    where to find the same figures in Tally -- writing nothing to the
-    dashboard. Run by hand while watching Tally, to try the one new request
-    safely and check the figures once before trusting them. The opening
-    balances it reads are saved for the syncs to use."""
-    today = datetime.date.today()
-    with _exclusive_lock("sync.lock", 60):
-        type_parents = fetch_voucher_type_parents(today)
-        cash, bank = fetch_cash_ledger_names(today), fetch_bank_ledger_names(today)
-        _refuse_unreadable_company(cash, bank)
-        started = time.time()
-        openings = fetch_ledger_openings(today)
-        print(f"\nOpening balances read in {time.time() - started:.1f} s: "
-              f"{len(openings['ledgers'])} ledgers, {len(openings['groups'])} groups.")
-        with open(os.path.join(SCRIPT_DIR, OPENINGS_FILE), "w", encoding="utf-8") as f:
-            json.dump(openings, f, ensure_ascii=False)
-        books = _Books(openings, _fetch_all_voucher_records(today), type_parents)
-    rupees = lambda n: f"Rs.{n:,.2f}"
-    print(f"\nBalances worked out for today, {today:%d %b %Y} -- compare each with Tally:\n")
-    print("  Cash and bank (Tally: Display > Account Books > Cash/Bank Book, closing balance)")
-    for name in sorted(cash) + sorted(bank):
-        print(f"    {name:<40} {rupees(books.balance(name, today)):>20}")
-    parties = books.party_balances(today)
-    print("\n  Parties (Tally: Balance Sheet > Current Assets / Current Liabilities)")
-    print(f"    {'Sundry Debtors':<40} {rupees(parties['debtors']['total']):>20}  ({parties['debtors']['count']} parties)")
-    print(f"    {'Sundry Creditors':<40} {rupees(parties['creditors']['total']):>20}  ({parties['creditors']['count']} parties)")
-    print("\nNothing was written to the dashboard.")
-    return 0
-
-
 def run_test_group(group):
     """--test-group "Cash-in-Hand": asks Tally for its Group Summary of one
     group as at today and prints each line and the total, to compare with
@@ -2028,8 +1970,6 @@ def main():
     parser.add_argument("--dump-raw-dir", default=None, help="Save every raw Tally XML response here for debugging")
     parser.add_argument("--check", action="store_true",
                         help="Only check that the Firebase key works and Tally answers with the company readable, then exit")
-    parser.add_argument("--test-balances", action="store_true",
-                        help="Read the opening balances, print today's worked-out balances to compare with Tally, write nothing")
     parser.add_argument("--test-group", metavar="GROUP",
                         help="Print Tally's Group Summary of one group as at today, to compare with Tally, write nothing")
     parser.add_argument("--if-leader", action="store_true",
@@ -2051,13 +1991,6 @@ def main():
 
     if args.check:
         sys.exit(run_check())
-
-    if args.test_balances:
-        try:
-            sys.exit(run_test_balances())
-        except TallyError as e:
-            log.error("Tally error: %s", e)
-            sys.exit(1)
 
     if args.test_group:
         try:
