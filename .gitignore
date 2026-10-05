@@ -9,3 +9,4 @@ tally-sync/sync_role.txt
 tally-sync/tally_data_dir.txt
 tally-sync/ledger_openings.json
 tally-sync/openings_paused_until.txt
+tally-sync/tally_test_output/

@@ -982,6 +982,54 @@ def fetch_ledger_openings(date, dump_raw_dir=None):
             "groups": groups, "ledgers": ledgers}
 
 
+def fetch_group_summary(group, upto, dump_raw_dir=None, timeout=30):
+    """Tally's own Group Summary report for one group, as at upto: each line
+    under it (a ledger, or a sub-group as one line) with its closing balance,
+    debit-positive. A report rather than a Ledger collection because on
+    5 Oct 2026 every per-ledger balance request hung Tally -- CLOSINGBALANCE
+    and then OPENINGBALANCE, which in this company Tally also works out
+    from earlier years -- while its own Profit and Loss report answered in
+    under half a second all along. One attempt only: a retry asks a stuck
+    Tally the same thing twice.
+
+    The export is a flat run of <DSPACCNAME><DSPDISPNAME>name</DSPDISPNAME>
+    </DSPACCNAME> each followed by a sibling <DSPACCINFO> holding
+    DSPCLDRAMT/DSPCLDRAMTA (debit, negative) and DSPCLCRAMT/DSPCLCRAMTA
+    (credit), the same layout as the Trial Balance export."""
+    from xml.sax.saxutils import escape
+    xml_req = f"""<ENVELOPE>
+ <HEADER>
+  <TALLYREQUEST>Export Data</TALLYREQUEST>
+ </HEADER>
+ <BODY>
+  <EXPORTDATA>
+   <REQUESTDESC>
+    <REPORTNAME>Group Summary</REPORTNAME>
+    <STATICVARIABLES>
+     <SVCURRENTCOMPANY>{escape(TALLY_COMPANY_NAME)}</SVCURRENTCOMPANY>
+     <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+     <GROUPNAME>{escape(group)}</GROUPNAME>
+     <SVFROMDATE>{_fmt_date(_fy_start(upto))}</SVFROMDATE>
+     <SVTODATE>{_fmt_date(upto)}</SVTODATE>
+    </STATICVARIABLES>
+   </REQUESTDESC>
+  </EXPORTDATA>
+ </BODY>
+</ENVELOPE>"""
+    root = _post_xml(xml_req, dump_raw_dir, "group_summary_" + re.sub(r"\W+", "_", group).strip("_").lower(),
+                     timeout=timeout, max_attempts=1)
+    lines, name = [], None
+    for el in root.iter():
+        if el.tag == "DSPACCNAME":
+            name = _text(el, "DSPDISPNAME")
+        elif el.tag == "DSPACCINFO" and name is not None:
+            dr = _num(el.find("DSPCLDRAMT") if el.find("DSPCLDRAMT") is not None else el, "DSPCLDRAMTA")
+            cr = _num(el.find("DSPCLCRAMT") if el.find("DSPCLCRAMT") is not None else el, "DSPCLCRAMTA")
+            lines.append({"name": name, "closing": round(-(dr + cr), 2)})
+            name = None
+    return lines
+
+
 def _load_openings(fy_start):
     try:
         with open(os.path.join(SCRIPT_DIR, OPENINGS_FILE), encoding="utf-8") as f:
@@ -1914,6 +1962,28 @@ def run_test_balances():
     return 0
 
 
+def run_test_group(group):
+    """--test-group "Cash-in-Hand": asks Tally for its Group Summary of one
+    group as at today and prints each line and the total, to compare with
+    the same group in Tally -- writing nothing to the dashboard. Run by hand
+    while watching Tally, smallest group first, before any sync relies on
+    it. The raw answer is saved in tally_test_output for checking."""
+    today = datetime.date.today()
+    with _exclusive_lock("sync.lock", 60):
+        started = time.time()
+        lines = fetch_group_summary(group, today, dump_raw_dir=os.path.join(SCRIPT_DIR, "tally_test_output"))
+        took = time.time() - started
+    rupees = lambda n: f"Rs.{n:,.2f}"
+    print(f"\n{group} as at {today:%d %b %Y}: {len(lines)} lines, Tally answered in {took:.1f} s\n")
+    for line in lines[:40]:
+        print(f"    {line['name']:<45} {rupees(line['closing']):>20}")
+    if len(lines) > 40:
+        print(f"    ... and {len(lines) - 40} more")
+    print(f"\n    {'Total (debit positive)':<45} {rupees(sum(l['closing'] for l in lines)):>20}")
+    print("\nNothing was written to the dashboard.")
+    return 0
+
+
 def run_check():
     """Checks the two things a sync needs, the same way a sync uses them,
     and prints one CHECK line for each: the Firebase key (reads from the
@@ -1960,6 +2030,8 @@ def main():
                         help="Only check that the Firebase key works and Tally answers with the company readable, then exit")
     parser.add_argument("--test-balances", action="store_true",
                         help="Read the opening balances, print today's worked-out balances to compare with Tally, write nothing")
+    parser.add_argument("--test-group", metavar="GROUP",
+                        help="Print Tally's Group Summary of one group as at today, to compare with Tally, write nothing")
     parser.add_argument("--if-leader", action="store_true",
                         help="Skip (exit code 3) when this is the backup PC and the main sync PC is active")
     parser.add_argument("--listen", action="store_true",
@@ -1983,6 +2055,13 @@ def main():
     if args.test_balances:
         try:
             sys.exit(run_test_balances())
+        except TallyError as e:
+            log.error("Tally error: %s", e)
+            sys.exit(1)
+
+    if args.test_group:
+        try:
+            sys.exit(run_test_group(args.test_group))
         except TallyError as e:
             log.error("Tally error: %s", e)
             sys.exit(1)
