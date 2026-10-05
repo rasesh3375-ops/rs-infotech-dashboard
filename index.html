@@ -1082,6 +1082,14 @@ function renderStock(d){
   const body = document.getElementById('stockBody');
   const items = (d && d.items) || [];
   const fmtQty = (r) => r.qty_text || (r.qty != null ? String(r.qty) : '');
+  // Tally sends a rate as "3830.66" (or with a unit, "50000.00/Nos"):
+  // shown with the same grouping as every other figure, the unit kept.
+  const fmtRate = (t) => {
+    const m = /^\s*(-?[\d,]*\.?\d+)(.*)$/.exec(t || '');
+    if (!m) return t || '';
+    const n = Number(m[1].replace(/,/g, ''));
+    return isFinite(n) ? '₹' + n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + m[2] : t;
+  };
   if (!d || (!d.as_of && !d.error)){
     document.getElementById('stockTotal').textContent = '–';
     document.getElementById('stockCount').textContent = 'Not synced from Tally yet';
@@ -1115,7 +1123,7 @@ function renderStock(d){
       <td>${escapeHtml(r.name || '')}</td>
       ${byGroup ? '' : `<td>${escapeHtml(r.group || '')}</td>`}
       <td class="num-col"${(r.value || 0) < 0 ? ' style="color:var(--red)"' : ''}>${escapeHtml(fmtQty(r))}</td>
-      ${byItem ? `<td class="num-col rate-col">${escapeHtml(r.rate_text || '')}</td>` : ''}
+      ${byItem ? `<td class="num-col rate-col">${escapeHtml(fmtRate(r.rate_text))}</td>` : ''}
       <td class="num-col"${(r.value || 0) < 0 ? ' style="color:var(--red)"' : ''}>${fmtINR(r.value)}</td>
     </tr>`).join('') : `<tr><td colspan="${byGroup ? 3 : byItem ? 5 : 4}" class="empty-note">No stock read yet.</td></tr>`;
 }
