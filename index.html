@@ -494,10 +494,10 @@
       <div class="kicker">Stock</div>
       <div class="stat-count" id="stockTotal">–</div>
       <div class="stat-sub" id="stockCount">Loading…</div>
-      <div class="tap-hint">Tap for item-wise detail</div>
+      <div class="tap-hint">Tap for detail</div>
       <div class="voucher-detail-panel tall" id="stockDetail">
         <table class="datatable party-table" id="stockTable">
-          <thead><tr><th>Item</th><th>Group</th><th class="num-col">Quantity</th><th class="num-col">Value</th></tr></thead>
+          <thead id="stockHead"><tr><th>Item</th><th>Group</th><th class="num-col">Quantity</th><th class="num-col">Value</th></tr></thead>
           <tbody id="stockBody"><tr><td colspan="4" class="empty-note">Loading…</td></tr></tbody>
         </table>
       </div>
@@ -1086,19 +1086,29 @@ function renderStock(d){
     return;
   }
   document.getElementById('stockTotal').textContent = d.as_of ? fmtINR(d.total_value) : '–';
+  // Since 5 Oct the sync stores Tally's Stock Summary by stock group
+  // (level "group"), with the parent group's name in .group -- the same on
+  // every row, so the column is left out rather than repeated.
+  const byGroup = d.level === 'group';
+  const noun = byGroup ? 'group' : 'item';
+  document.getElementById('stockHead').innerHTML = byGroup
+    ? '<tr><th>Stock group</th><th class="num-col">Quantity</th><th class="num-col">Value</th></tr>'
+    : '<tr><th>Item</th><th>Group</th><th class="num-col">Quantity</th><th class="num-col">Value</th></tr>';
   const notes = [];
-  if (d.as_of) notes.push(items.length + ' item' + (items.length === 1 ? '' : 's') + ' · as on ' + syncWhen(d.as_of));
+  if (d.as_of) notes.push(items.length + ' ' + noun + (items.length === 1 ? '' : 's') + ' · as on ' + syncWhen(d.as_of));
   if (d.matches === false) notes.push('⚠ P&L stock ' + fmtINR(d.pl_closing_stock));
   if (d.error) notes.push('⚠ Tally didn\'t answer — paused till ' + isoToShort(d.paused_until));
   document.getElementById('stockCount').textContent = notes.join(' · ');
   document.getElementById('stockCount').title = d.error ? 'Latest stock read failed: ' + d.error : '';
+  // A negative stock value -- more issued or sold than ever came in, as in
+  // Tally -- is shown in red so it gets looked at.
   body.innerHTML = items.length ? items.map(r => `
     <tr>
       <td>${escapeHtml(r.name || '')}</td>
-      <td>${escapeHtml(r.group || '')}</td>
-      <td class="num-col">${escapeHtml(fmtQty(r))}</td>
-      <td class="num-col">${fmtINR(r.value)}</td>
-    </tr>`).join('') : '<tr><td colspan="4" class="empty-note">No stock read yet.</td></tr>';
+      ${byGroup ? '' : `<td>${escapeHtml(r.group || '')}</td>`}
+      <td class="num-col"${(r.value || 0) < 0 ? ' style="color:var(--red)"' : ''}>${escapeHtml(fmtQty(r))}</td>
+      <td class="num-col"${(r.value || 0) < 0 ? ' style="color:var(--red)"' : ''}>${fmtINR(r.value)}</td>
+    </tr>`).join('') : `<tr><td colspan="${byGroup ? 3 : 4}" class="empty-note">No stock read yet.</td></tr>`;
 }
 
 function attachStockListener(){
@@ -1310,8 +1320,11 @@ function shareSections(){
       rows: shownChallans.map(r => [r.date || '', r.party || '(no party)', r.description || '', r.voucher_no || '']) },
     { title: 'Pending proforma invoices', head: ['Date', 'Party', 'Description', 'Voucher No', 'Amount'],
       rows: shownProformas.map(r => [r.date || '', r.party || '(no party)', r.description || '', r.voucher_no || '', fmtINR(r.amount)]) },
-    { title: 'Stock', head: ['Item', 'Group', 'Quantity', 'Amount'],
-      rows: ((shownStock || {}).items || []).map(r => [r.name || '', r.group || '', r.qty_text || '', fmtINR(r.value)]) },
+    (shownStock || {}).level === 'group'
+      ? { title: 'Stock', head: ['Stock group', 'Quantity', 'Amount'],
+          rows: shownStock.items.map(r => [r.name || '', r.qty_text || '', fmtINR(r.value)]) }
+      : { title: 'Stock', head: ['Item', 'Group', 'Quantity', 'Amount'],
+          rows: ((shownStock || {}).items || []).map(r => [r.name || '', r.group || '', r.qty_text || '', fmtINR(r.value)]) },
     ...['debtors', 'creditors'].map(key => ({ title: 'Sundry ' + key, head: ['Party', 'Group', 'Amount'],
       rows: ((shownParties[key] || {}).parties || []).map(r => [r.name || '', r.group || '', fmtINR(r.amount)]) })),
   ];

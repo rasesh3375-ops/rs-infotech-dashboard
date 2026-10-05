@@ -12,10 +12,10 @@ Stock is handled with care. Computing closing stock balances and values
 as of a date was consistently the slowest thing Tally did, and a Stock
 Summary export once coincided with a real Tally Prime crash (Memory
 Access Violation) on shared company data. So the per-day sync never asks
-for it: the dashboard's stock total is the Closing Stock line of the P&L
-Tally already returns every day, and the item-wise list is a single
-request at most every STOCK_MIN_HOURS, one attempt, a time limit, and a
-pause of STOCK_PAUSE_DAYS after any failure -- see _sync_stock.
+for it: the stock tile is Tally's own Stock Summary report by stock group,
+read at most every STOCK_MIN_HOURS, one attempt each, a time limit, and a
+pause of STOCK_PAUSE_HOURS after Tally fails to answer in time -- see
+_sync_stock.
 
 Run this on the SAME PC as Tally Prime, with Tally open and the company
 loaded. See the setup walkthrough for how to enable Tally's XML gateway,
@@ -96,15 +96,18 @@ PENDING_PROFORMA_DOC = "pending_proforma_invoices"
 # PERIOD_COLLECTION for the same reason as the Proforma list.
 PARTY_BALANCES_DOC = "sundry_balances"
 
-# Every stock item's closing quantity and value, as of the latest item-wise
-# read, as one document -- see _sync_stock for how carefully that's done.
+# Each stock group's closing quantity and value, and their total, as of the
+# latest read, as one document -- see _sync_stock for how carefully that's
+# done.
 STOCK_DOC = "stock_summary"
 STOCK_MIN_HOURS = 3
-# Off since 5 Oct 2026: Tally on the owner's laptop hung during the first
-# sync that included the new heavier requests, and until its logs show
-# which request did it, the item-wise stock read -- the one with a crash
-# already against it -- stays off. The tile says it hasn't been read.
-STOCK_ENABLED = False
+# Off from 5 Oct 2026 while Tally kept hanging, when the stock came from a
+# StockItem collection with every item's closing value -- the same kind of
+# per-object request as the ledger balances that turned out to be the cause.
+# Back on the same day with Tally's own Stock Summary report instead: by
+# hand on the laptop it answered in 0.2 s plain and 0.1 s exploded, and its
+# total matched the P&L closing stock to the paisa (Rs.3,53,782.02).
+STOCK_ENABLED = True
 # Balances -- cash and bank opening/closing for the daily emails, and every
 # party's balance for the Sundry Debtors/Creditors tiles -- come from
 # Tally's own Group Summary report, one group at a time (fetch_group_summary).
@@ -133,8 +136,8 @@ PARTY_BALANCES_MARKER = "party_balances_at.txt"
 # stock journals, memorandum and reversing journals don't post, and neither
 # does an optional or cancelled voucher of any type.
 ACCOUNTING_BASES = {"sales", "purchase", "payment", "receipt", "contra", "journal", "credit note", "debit note"}
-STOCK_PAUSE_DAYS = 7
-STOCK_TIMEOUT_SECONDS = 120
+STOCK_PAUSE_HOURS = 12
+STOCK_TIMEOUT_SECONDS = 60
 
 # The dashboard's Sync now button and this PC's answer to it -- see
 # run_listener. "request" is the one document the dashboard may write
@@ -1132,36 +1135,6 @@ def _sync_party_balances(balances, dry_run=False, force=False):
         log.warning("Sundry debtors/creditors not written -- %s", e)
 
 
-def fetch_stock_items(date, dump_raw_dir=None):
-    """Every stock item's closing quantity and value at the end of the given
-    day, from Tally's own valuation. One request, one attempt, a time limit
-    -- this is the computation that once coincided with a Tally crash, so
-    nothing here retries it. Items with no quantity and no value are left
-    out. Value is a debit, which Tally writes as a negative number."""
-    xml_req = _collection_request("StockItems", "StockItem",
-                                  ["NAME", "PARENT", "BASEUNITS", "CLOSINGBALANCE", "CLOSINGVALUE", "CLOSINGRATE"],
-                                  _fy_start(date), date)
-    root = _post_xml(xml_req, dump_raw_dir, "stock_items", timeout=STOCK_TIMEOUT_SECONDS, max_attempts=1)
-    items = []
-    for it in _collection_records(root, "STOCKITEM"):
-        qty_text = _text(it, "CLOSINGBALANCE")
-        m = re.match(r"\s*(-?[\d,]*\.?\d+)", qty_text)
-        qty = float(m.group(1).replace(",", "")) if m else 0.0
-        value = round(-_num(it, "CLOSINGVALUE"), 2)
-        if abs(qty) < 1e-9 and abs(value) < 0.5:
-            continue
-        items.append({"name": (it.get("NAME") or _text(it, "NAME") or "").strip(),
-                      "group": _text(it, "PARENT").strip(),
-                      "qty": qty, "qty_text": qty_text.strip(),
-                      "value": value})
-    items.sort(key=lambda r: -r["value"])
-    # An empty list is what a company Tally can't read looks like -- 5 Oct
-    # wrote "0 items" that way -- so it's treated as a failed read.
-    if not items:
-        raise TallyError("No stock items returned. " + UNREADABLE_COMPANY_HINT)
-    return items
-
-
 def fetch_stock_summary(upto, dump_raw_dir=None, timeout=60, items=False):
     """Tally's own Stock Summary report as at upto, top level: each stock
     group (or item not in a group) with its closing quantity and value --
@@ -1216,6 +1189,38 @@ def fetch_stock_summary(upto, dump_raw_dir=None, timeout=60, items=False):
     return lines
 
 
+def fetch_stock_groups(date, dump_raw_dir=None):
+    """(total, groups) for the Stock tile: Tally's Stock Summary total as at
+    date, and the lines one level down, each with its quantity and value.
+
+    Asked twice, plain and exploded, because the exploded export is the same
+    flat run of lines with the parent lines still in it: on 5 Oct it came
+    back as "No" (Rs.3,53,782.02) followed by the four groups under it,
+    which add up to the same figure -- summing every line doubled the stock.
+    The plain report's lines are the top level, so the groups are whatever
+    the exploded one has that the plain one doesn't, and the total is the
+    plain report's own. If those groups don't add up to it, the top-level
+    lines are listed instead: never a list that counts anything twice."""
+    top = fetch_stock_summary(date, dump_raw_dir, timeout=STOCK_TIMEOUT_SECONDS)
+    # A company Tally can't read answers with nothing; 5 Oct wrote "0 items"
+    # that way.
+    if not top:
+        raise TallyError("Stock Summary came back empty. " + UNREADABLE_COMPANY_HINT)
+    total = round(sum(r["value"] for r in top), 2)
+    exploded = fetch_stock_summary(date, dump_raw_dir, timeout=STOCK_TIMEOUT_SECONDS, items=True)
+    top_names = {r["name"] for r in top}
+    under = [r for r in exploded if r["name"] not in top_names]
+    if under and abs(sum(r["value"] for r in under) - total) < 1:
+        parent = top[0]["name"] if len(top) == 1 else ""
+        groups = [dict(r, group=parent) for r in under]
+    else:
+        if under:
+            log.warning("Stock groups add up to Rs.%.2f, not the Stock Summary total Rs.%.2f -- listing the top level.",
+                        sum(r["value"] for r in under), total)
+        groups = [dict(r, group="") for r in top]
+    return total, groups
+
+
 def _stock_marker(name):
     return os.path.join(SCRIPT_DIR, name)
 
@@ -1234,29 +1239,31 @@ def _write_marker(name, when):
 
 
 def _sync_stock(date, pl_closing_stock=None, dry_run=False, dump_raw_dir=None):
-    """Reads the item-wise stock and stores it, as carefully as Tally needs:
+    """Reads the stock by group from Tally's Stock Summary and stores it, as
+    carefully as Tally needs:
       - at most once every STOCK_MIN_HOURS, however often syncs run -- the
         hourly and Sync now runs mostly skip it;
-      - one attempt with a STOCK_TIMEOUT_SECONDS limit, never retried;
-      - after any failure, not asked again for STOCK_PAUSE_DAYS, and the
-        dashboard says so, so a Tally that struggles with it isn't hit
-        every hour.
-    pl_closing_stock, when given, is the P&L's Closing Stock for the same
-    day; the items' total is checked against it. Never stops the sync."""
+      - one attempt per request with a STOCK_TIMEOUT_SECONDS limit;
+      - after Tally fails to answer in time, not asked again for
+        STOCK_PAUSE_HOURS, and the dashboard says so. Tally being closed
+        isn't a reason to pause: the next sync simply tries again.
+    pl_closing_stock is the P&L's Closing Stock for the same day, asked for
+    here when not given; the stock total is checked against it. Never
+    stops the sync."""
     now = datetime.datetime.now()
     paused_until = _read_marker("stock_paused_until.txt")
     if not dry_run and paused_until and paused_until > now:
-        log.info("Item-wise stock paused until %s after an earlier failure.", paused_until.date())
+        log.info("Stock paused until %s after Tally didn't answer in time.", f"{paused_until:%d %b %H:%M}")
         return
     last = _read_marker("stock_last_read.txt")
     if not dry_run and last and now - last < datetime.timedelta(hours=STOCK_MIN_HOURS):
         return
     started = time.time()
     try:
-        items = fetch_stock_items(date, dump_raw_dir)
-    except TallyError as e:
-        until = now + datetime.timedelta(days=STOCK_PAUSE_DAYS)
-        log.warning("Item-wise stock not read (%s) -- not asking again until %s.", e, until.date())
+        total, groups = fetch_stock_groups(date, dump_raw_dir)
+    except TallyTimeout as e:
+        until = now + datetime.timedelta(hours=STOCK_PAUSE_HOURS)
+        log.warning("Stock not read (%s) -- not asking again until %s.", e, f"{until:%d %b %H:%M}")
         if not dry_run:
             _write_marker("stock_paused_until.txt", until)
             try:
@@ -1265,14 +1272,22 @@ def _sync_stock(date, pl_closing_stock=None, dry_run=False, dump_raw_dir=None):
             except Exception as ex:
                 log.warning("Stock status not written -- %s", ex)
         return
+    except TallyError as e:
+        log.warning("Stock not read -- %s", e)
+        return
     took = time.time() - started
-    total = round(sum(r["value"] for r in items), 2)
+    if pl_closing_stock is None:
+        try:
+            pl_closing_stock = fetch_profit_and_loss(date, dump_raw_dir).get("closing_stock")
+        except TallyError as e:
+            log.warning("P&L closing stock not read for the stock check -- %s", e)
     matches = None if pl_closing_stock is None else abs(total - pl_closing_stock) < 1
-    log.info("Item-wise stock: %d items, Rs.%s (%.0f s)%s", len(items), total, took,
+    log.info("Stock: Rs.%s in %d groups (%.1f s)%s", total, len(groups), took,
              "" if matches is not False else f" -- P&L closing stock is Rs.{pl_closing_stock}")
     doc = {"as_of": datetime.datetime.now(datetime.timezone.utc).isoformat(), "date": date.isoformat(),
-           "total_value": total, "count": len(items), "items": items, "seconds": round(took, 1),
-           "pl_closing_stock": pl_closing_stock, "matches": matches, "error": None, "paused_until": None}
+           "level": "group", "total_value": total, "count": len(groups), "items": groups,
+           "seconds": round(took, 1), "pl_closing_stock": pl_closing_stock, "matches": matches,
+           "error": None, "paused_until": None}
     if dry_run:
         print(json.dumps(doc, indent=2, ensure_ascii=False))
         return
@@ -1280,7 +1295,7 @@ def _sync_stock(date, pl_closing_stock=None, dry_run=False, dump_raw_dir=None):
         _firestore_db().collection(PERIOD_COLLECTION).document(STOCK_DOC).set(doc)
         _write_marker("stock_last_read.txt", now)
     except Exception as e:
-        log.warning("Item-wise stock not written -- %s", e)
+        log.warning("Stock not written -- %s", e)
 
 
 def push_pending_proformas(records, covered_from):
@@ -1562,10 +1577,10 @@ def run(date, dry_run=False, dump_raw_dir=None):
               FIRESTORE_COLLECTION, date_iso, len(delivery_challans), removed, listed)
     sync_period_reports(date, date, dump_raw_dir=dump_raw_dir)
     _sync_party_balances(balances)
-    # Stock is left to the once-a-day scheduled run (run_backfill): this
-    # one runs for every Sync now press, every change in Tally and every
-    # hour, and valuing every stock item is too heavy to repeat all day on
-    # the PC people are working in Tally on.
+    # Two Stock Summary requests of 0.1-0.2 s each, and _sync_stock asks at
+    # most every STOCK_MIN_HOURS however often this runs.
+    if STOCK_ENABLED:
+        _sync_stock(date, (payload.get("profit_and_loss") or {}).get("closing_stock"), dump_raw_dir=dump_raw_dir)
 
 
 def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
