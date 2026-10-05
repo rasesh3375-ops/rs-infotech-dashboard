@@ -1162,7 +1162,7 @@ def fetch_stock_items(date, dump_raw_dir=None):
     return items
 
 
-def fetch_stock_summary(upto, dump_raw_dir=None, timeout=60):
+def fetch_stock_summary(upto, dump_raw_dir=None, timeout=60, items=False):
     """Tally's own Stock Summary report as at upto, top level: each stock
     group (or item not in a group) with its closing quantity and value --
     the screen Gateway > Stock Summary shows. A report rather than a
@@ -1173,7 +1173,11 @@ def fetch_stock_summary(upto, dump_raw_dir=None, timeout=60):
     The export is a flat run of <DSPACCNAME><DSPDISPNAME>name</DSPDISPNAME>
     </DSPACCNAME> each followed by a <DSPSTKINFO> holding the closing
     figures (DSPCLQTY, DSPCLRATE, DSPCLAMTA). Tally writes the value of
-    stock, a debit, as a negative number; it's returned as a positive one."""
+    stock, a debit, as a negative number; it's returned as a positive one.
+
+    items=True asks for the report exploded, item by item -- what F5 does on
+    Tally's own Stock Summary screen. On 5 Oct the plain report came back as
+    one line in 0.2 s, matching the P&L closing stock to the paisa."""
     from xml.sax.saxutils import escape
     xml_req = f"""<ENVELOPE>
  <HEADER>
@@ -1188,12 +1192,14 @@ def fetch_stock_summary(upto, dump_raw_dir=None, timeout=60):
      <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
      <SVFROMDATE>{_fmt_date(_fy_start(upto))}</SVFROMDATE>
      <SVTODATE>{_fmt_date(upto)}</SVTODATE>
+     <EXPLODEFLAG>{"Yes" if items else "No"}</EXPLODEFLAG>
     </STATICVARIABLES>
    </REQUESTDESC>
   </EXPORTDATA>
  </BODY>
 </ENVELOPE>"""
-    root = _post_xml(xml_req, dump_raw_dir, "stock_summary", timeout=timeout, max_attempts=1)
+    root = _post_xml(xml_req, dump_raw_dir, "stock_summary_items" if items else "stock_summary",
+                     timeout=timeout, max_attempts=1)
     lines, name = [], None
     for el in root.iter():
         if el.tag == "DSPACCNAME":
@@ -1974,7 +1980,7 @@ def run_test_group(group):
     return 0
 
 
-def run_test_stock():
+def run_test_stock(items=False):
     """--test-stock: asks Tally for its Stock Summary as at today and prints
     each line and the total next to Tally's own P&L closing stock, which
     should be the same figure -- writing nothing to the dashboard. Run by
@@ -1984,7 +1990,7 @@ def run_test_stock():
     dump = os.path.join(SCRIPT_DIR, "tally_test_output")
     with _exclusive_lock("sync.lock", 60):
         started = time.time()
-        lines = fetch_stock_summary(today, dump_raw_dir=dump)
+        lines = fetch_stock_summary(today, dump_raw_dir=dump, items=items)
         took = time.time() - started
         try:
             pl_stock = fetch_profit_and_loss(today, dump).get("closing_stock")
@@ -2001,6 +2007,10 @@ def run_test_stock():
     print(f"\n    {'Total':<40} {'':>16} {rupees(total):>18}")
     if pl_stock is not None:
         print(f"    {'P&L closing stock (should match)':<40} {'':>16} {rupees(pl_stock):>18}")
+    raw = os.path.join(dump, ("stock_summary_items" if items else "stock_summary") + ".xml")
+    if len(lines) < 3 and os.path.exists(raw):
+        with open(raw, encoding="utf-8") as f:
+            print("\nTally's answer, as sent:\n" + f.read()[:1500])
     print(f"\nRaw answer saved in {dump}. Nothing was written to the dashboard.")
     return 0
 
@@ -2051,8 +2061,9 @@ def main():
                         help="Only check that the Firebase key works and Tally answers with the company readable, then exit")
     parser.add_argument("--test-group", metavar="GROUP",
                         help="Print Tally's Group Summary of one group as at today, to compare with Tally, write nothing")
-    parser.add_argument("--test-stock", action="store_true",
-                        help="Print Tally's Stock Summary as at today next to the P&L closing stock, write nothing")
+    parser.add_argument("--test-stock", nargs="?", const="summary", choices=["summary", "items"],
+                        help="Print Tally's Stock Summary as at today next to the P&L closing stock, write nothing; "
+                             "'--test-stock items' asks for it item by item")
     parser.add_argument("--if-leader", action="store_true",
                         help="Skip (exit code 3) when this is the backup PC and the main sync PC is active")
     parser.add_argument("--listen", action="store_true",
@@ -2082,7 +2093,7 @@ def main():
 
     if args.test_stock:
         try:
-            sys.exit(run_test_stock())
+            sys.exit(run_test_stock(items=args.test_stock == "items"))
         except TallyError as e:
             log.error("Tally error: %s", e)
             sys.exit(1)
