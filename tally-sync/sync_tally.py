@@ -46,6 +46,7 @@ import logging.handlers
 import os
 import platform
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -172,6 +173,23 @@ log = logging.getLogger("tally_sync")
 # ---------------------------------------------------------------------------
 # Low-level Tally HTTP/XML plumbing
 # ---------------------------------------------------------------------------
+
+def _host_name():
+    """This PC's name, for the status and agent documents: the network name,
+    the same value platform.node() gives, so the PC keeps its name on the
+    dashboard. Not platform.node() itself: on Windows that can run
+    "cmd /c ver" to find the Windows version, and from the window-less
+    listener every such cmd opened a Command Prompt window in front of
+    whatever the owner was doing -- once at every sync."""
+    return socket.gethostname()
+
+
+if os.name == "nt":
+    # The same "cmd /c ver" behind any other platform call, here or in a
+    # library: the Windows version is never needed, and asking for it must
+    # not open a window.
+    platform._syscmd_ver = lambda system="", release="", version="", *a, **k: (system, release, version)
+
 
 class TallyError(RuntimeError):
     pass
@@ -2041,7 +2059,7 @@ class _Listener:
     def __init__(self, db, run_sync, role=None, data_dir=None, newest_change=None):
         self.control = db.collection(SYNC_CONTROL_COLLECTION)
         self.run_sync = run_sync
-        self.host = platform.node()
+        self.host = _host_name()
         self.role = role or _sync_role()
         self.data_dir = data_dir
         self.newest_change = newest_change or _TallyChangeWatch()
@@ -2146,7 +2164,7 @@ def _sync_today_in_subprocess():
     errors = [line.split("] ", 1)[-1] for line in output.splitlines() if "[ERROR]" in line]
     message = errors[-1] if errors else f"The sync stopped with exit code {proc.returncode}."
     if "Could not reach Tally" in message or "did not respond" in message:
-        message = f"Tally is not open on {platform.node()}, or not answering. " + message
+        message = f"Tally is not open on {_host_name()}, or not answering. " + message
     return False, message[:400]
 
 
@@ -2198,7 +2216,7 @@ def run_listener():
         return 0
     started_version = os.path.getmtime(os.path.abspath(__file__))
     log.info("Listening for Sync now on %s (and syncing today hourly, %d:00-%d:59)",
-             platform.node(), HOURLY_SYNC_FROM_HOUR, HOURLY_SYNC_TO_HOUR)
+             _host_name(), HOURLY_SYNC_FROM_HOUR, HOURLY_SYNC_TO_HOUR)
     listener = None
     while True:
         try:
@@ -2222,8 +2240,8 @@ def _record_result(ok, message, dry_run=False):
     if dry_run:
         return
     now = _utc_now().isoformat()
-    fields = ({"last_ok_at": now, "last_ok_host": platform.node()} if ok
-              else {"last_error_at": now, "last_error_host": platform.node(), "last_error": message[:400]})
+    fields = ({"last_ok_at": now, "last_ok_host": _host_name()} if ok
+              else {"last_error_at": now, "last_error_host": _host_name(), "last_error": message[:400]})
     try:
         _firestore_db().collection(SYNC_CONTROL_COLLECTION).document("status").set(fields, merge=True)
     except Exception as e:
@@ -2434,7 +2452,7 @@ def main():
 
     if args.if_leader and _sync_role() != "primary":
         try:
-            other = _primary_elsewhere(_firestore_db().collection(SYNC_CONTROL_COLLECTION), platform.node(), _utc_now())
+            other = _primary_elsewhere(_firestore_db().collection(SYNC_CONTROL_COLLECTION), _host_name(), _utc_now())
         except Exception as e:
             other = None
             log.warning("Couldn't check for the main sync PC (%s) -- syncing from here.", e)
