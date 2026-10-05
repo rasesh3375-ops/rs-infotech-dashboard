@@ -8,12 +8,12 @@ figures the Tally sync has already stored in Firestore (daily_reports):
   Daily Purchase Entries    purchases before and with GST, every entry
   Daily Sales Entries       sales before and with GST, every entry
 
-and every Saturday, four more:
+every Saturday, three more, and one every Monday:
 
   Pending Delivery Challans   every Delivery Note still in Tally, oldest first
   Pending Proforma Invoices   every Proforma Invoice still in Tally, oldest first
   Stock Summary               every item in stock, as on the Stock tile
-  Debtors Pending 60+ Days    every debtor whose oldest unpaid bill is 60+ days old
+  Debtors Pending 60+ Days    (Monday) every debtor whose oldest unpaid bill is 60+ days old
 
 Each email's subject is its report name and the date, nothing else, so the
 four sort and search cleanly in the inbox.
@@ -34,6 +34,7 @@ Usage:
   python daily_report_emails.py                        # the four daily ones, for yesterday (India time)
   python daily_report_emails.py 2026-10-03             # the four daily ones, for a given day
   python daily_report_emails.py --report=weekly        # the two pending lists and the stock, as they stand now
+  python daily_report_emails.py --report=monday        # the debtors pending 60+ days
   python daily_report_emails.py --report=cash,bank     # only some of them
   python daily_report_emails.py --dry-run              # print them, send nothing
 """
@@ -627,8 +628,11 @@ REPORTS = {
     "debtors": ("Debtors Pending 60+ Days", _overdue_debtors_report),
 }
 DAILY = ["cash", "bank", "purchase", "sales"]
+# Lists as they stand now, dated the day they're sent (not one day's figures).
 WEEKLY = ["challans", "proformas", "stock", "debtors"]
-GROUPS = {"daily": DAILY, "weekly": WEEKLY, "all": DAILY}
+# Saturday's three, and the debtors on Monday morning -- moved there at the
+# owner's request so the follow-up calls start the same week.
+GROUPS = {"daily": DAILY, "weekly": ["challans", "proformas", "stock"], "monday": ["debtors"], "all": DAILY}
 
 
 def build_email(kind, day, report):
