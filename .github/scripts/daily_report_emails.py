@@ -14,6 +14,9 @@ every Saturday, three more, and one every Monday:
   Pending Proforma Invoices   every Proforma Invoice still in Tally, oldest first
   Stock Summary               every item in stock, as on the Stock tile
   Debtors Pending 60+ Days    (Monday) every debtor whose oldest unpaid bill is 60+ days old
+  Collection Call List        (Monday) the debtors to ring first, each with a payment
+                              reminder ready to send -- worded by AI when
+                              ANTHROPIC_API_KEY is set, see _call_list_report
 
 Each email's subject is its report name and the date, nothing else, so the
 four sort and search cleanly in the inbox.
@@ -29,12 +32,14 @@ repository is public:
   GMAIL_USER                the Gmail address the emails are sent from
   GMAIL_APP_PASSWORD        a Gmail app password for it (not the normal one)
   MAIL_TO                   where they go; several addresses separated by commas
+  ANTHROPIC_API_KEY         optional: the Claude API key that words the call
+                            list's reminders; without it they're standard wording
 
 Usage:
   python daily_report_emails.py                        # the four daily ones, for yesterday (India time)
   python daily_report_emails.py 2026-10-03             # the four daily ones, for a given day
   python daily_report_emails.py --report=weekly        # the two pending lists and the stock, as they stand now
-  python daily_report_emails.py --report=monday        # the debtors pending 60+ days
+  python daily_report_emails.py --report=monday        # the debtors pending 60+ days and the call list
   python daily_report_emails.py --report=cash,bank     # only some of them
   python daily_report_emails.py --dry-run              # print them, send nothing
 """
@@ -776,6 +781,341 @@ def debtors_pdf(doc, today):
                 f"Debtors Pending {DEBTOR_OVERDUE_DAYS}+ Days")
 
 
+# --- the collection call list -----------------------------------------------
+#
+# Monday's second email, next to the debtors pending 60+ days: who to ring
+# first and, for each, a payment reminder ready to send on WhatsApp or by
+# email. Asked for on 5 Oct 2026 as the first AI feature on the dashboard.
+#
+# Everything with a figure in it is worked out here, from Tally: who is on
+# the list, the order, the bills, the amounts and the dates. The AI (Claude,
+# through ANTHROPIC_API_KEY) only writes the wording around them -- how firm
+# to be with a customer 200 days late against one at 35 -- and never sees a
+# name, an amount, a bill number or a product. It returns a message with
+# {NAME}, {BILLS} and {TOTAL} in it, which this file fills in; a message with
+# any number of its own is thrown away for the plain wording below. A
+# reminder with a wrong amount, sent to a customer, costs more than a dull
+# one. With no key, or the AI unreachable, every message is the plain one
+# and the email goes out the same.
+
+# A bill this old is overdue on the call list -- the dashboard's
+# PARTY_OVERDUE_DAYS, so the list and the Debtors tile's "pending 30+ days"
+# agree.
+CALL_LIST_MIN_DAYS = 30
+# How many debtors the call list names: a week's calls, not all 80.
+CALL_LIST_SIZE = 15
+# How far back the last payment from each customer is looked for, in the
+# days synced from Tally (daily_reports' bank and cash receipts).
+RECEIPTS_LOOKBACK_DAYS = 365
+AI_URL = "https://api.anthropic.com/v1/messages"
+AI_MODEL = os.environ.get("AI_MODEL") or "claude-sonnet-5-5"
+SIGN_OFF = "Accounts Team\nR. S. Infotech"
+# Number words count as numbers: an AI message that spells out an amount
+# is as wrong as one that writes it in digits.
+_NUMBER_WORDS = re.compile(r"\b(lakhs?|lacs?|crores?|thousands?|hundreds?|percent|rupees?|rs)\b|[₹%#]", re.I)
+
+
+def read_receipts(today):
+    """{party name, lower case: [(date, amount), ...]} -- every payment
+    received, by bank or in cash, in the last RECEIPTS_LOOKBACK_DAYS days
+    that were synced (daily_reports' bank_vouchers and cash_vouchers going
+    "in"). Only those two fields of each day are fetched."""
+    start = (today - datetime.timedelta(days=RECEIPTS_LOOKBACK_DAYS)).isoformat()
+    out = {}
+    for snap in _db().collection(COLLECTION).select(["bank_vouchers", "cash_vouchers"]).stream():
+        if not (start <= snap.id <= today.isoformat()):
+            continue
+        doc = snap.to_dict() or {}
+        for key, way in (("bank_vouchers", "bank_in"), ("cash_vouchers", "cash_in")):
+            for v in (doc.get(key) or {}).get("vouchers") or []:
+                if v.get("direction") == way and (v.get("party") or "").strip() and (v.get("amount") or 0) > 0.5:
+                    out.setdefault(v["party"].strip().lower(), []).append((snap.id, v["amount"]))
+    return out
+
+
+def _call_list(doc, today, receipts):
+    """The debtors to call, most urgent first, and how many more there were
+    than CALL_LIST_SIZE. Each one owes at least one bill CALL_LIST_MIN_DAYS
+    or more days old (bills_list, sync_tally.py _add_days_pending) and is
+    ranked by those bills' amount times their days past CALL_LIST_MIN_DAYS --
+    so Rs.1.5 lakh 200 days old comes before Rs.7 lakh 40 days old, and both
+    before Rs.5,000 300 days old.
+
+    A sub-group's line on the Debtors tile holds several customers' bills;
+    each customer is its own entry here, since each gets its own reminder.
+    "check" is set when Tally's balance is below what the bills add up to
+    -- a payment received on account and not set against a bill -- and then
+    no message is offered, because the bills would ask for money already
+    paid."""
+    out = []
+    for row in (doc.get("debtors") or {}).get("parties") or []:
+        bills = row.get("bills_list") or []
+        if not bills:
+            continue
+        by_party = {}
+        for b in bills:
+            by_party.setdefault((b.get("party") or row.get("name") or "").strip(), []).append(b)
+        direct = list(by_party) == [(row.get("name") or "").strip()]
+        if direct and (row.get("amount") or 0) <= 0.5:
+            continue
+        for name, owed in by_party.items():
+            late = []
+            for b in owed:
+                try:
+                    days = (today - datetime.date.fromisoformat(b.get("date") or "")).days
+                except ValueError:
+                    continue
+                if days >= CALL_LIST_MIN_DAYS and (b.get("amount") or 0) > 0.5:
+                    late.append(dict(b, days=days))
+            if not late:
+                continue
+            late.sort(key=lambda b: (-b["days"], b.get("ref") or ""))
+            late_value = round(sum(b["amount"] for b in late), 2)
+            billed = round(sum(b.get("amount") or 0 for b in owed), 2)
+            paid = None
+            if receipts is not None:
+                # Two receipts on one day are one payment as far as the call goes.
+                days_paid = {}
+                for d, amt in receipts.get(name.lower()) or []:
+                    days_paid[d] = days_paid.get(d, 0) + amt
+                paid = sorted(days_paid.items())
+            check = ""
+            if direct and (row.get("amount") or 0) < billed - 1:
+                check = (f"Tally's balance is {inr(row.get('amount'))}, less than its bills' {inr(billed)} -- "
+                         f"a payment is on account and not set against a bill. Settle that in Tally first; "
+                         f"no message, as it would ask for money already paid.")
+            out.append({
+                "name": name, "group": "" if direct else row.get("name") or "",
+                "balance": row.get("amount") if direct else None, "bills": late, "late_value": late_value,
+                "days": late[0]["days"],
+                "score": sum(b["amount"] * (b["days"] - CALL_LIST_MIN_DAYS + 1) for b in late),
+                "last_paid": paid[-1] if paid else None, "paid_known": paid is not None, "check": check,
+                "paid_days_ago": (today - datetime.date.fromisoformat(paid[-1][0])).days if paid else None,
+                "paid_since_oldest": bool(paid) and paid[-1][0] >= late[0].get("date", "")})
+    out.sort(key=lambda p: (-p["score"], p["name"].lower()))
+    return out[:CALL_LIST_SIZE], max(len(out) - CALL_LIST_SIZE, 0)
+
+
+def _bills_block(p):
+    lines = []
+    for b in p["bills"]:
+        desc = (b.get("description") or "").strip()
+        if len(desc) > 70:
+            desc = desc[:67].rstrip(" ,") + "..."
+        lines.append(f"• Invoice {b.get('ref') or '-'} dated {nice_date(b.get('date'))}: {inr(b['amount'])}"
+                     + (f" for {desc}" if desc else ""))
+    return "\n".join(lines)
+
+
+def _plain_message(p):
+    """The reminder with no AI: gentler for a customer a month late than for
+    one four months late."""
+    n = len(p["bills"])
+    bills = "the following invoice is" if n == 1 else "the following invoices are"
+    if p["days"] < 60:
+        opening = f"This is a gentle reminder that {bills} still pending:"
+        close = "We would be grateful if you could arrange the payment at the earliest."
+    elif p["days"] < 120:
+        opening = f"Our records show that {bills} overdue:"
+        close = "Kindly arrange the payment this week, or let us know the date it will be released."
+    else:
+        opening = f"{bills[0].upper() + bills[1:]} long overdue and still pending:"
+        close = ("We request you to clear this on priority. Please confirm the payment date, "
+                 "or let us know if anything is holding it up so we can resolve it.")
+    return f"Dear {{NAME}},\n\n{opening}\n\n{{BILLS}}\n\nTotal: {{TOTAL}}\n\n{close}\n\nThank you,\n{SIGN_OFF}"
+
+
+def _plain_approach(p):
+    if p["paid_since_oldest"]:
+        return "They have paid since the oldest bill -- ask which bills that payment covered and when the rest will come."
+    if p["days"] >= 120:
+        return "Long overdue -- speak to the person who approves payments and ask for a firm date."
+    if p["days"] >= 60:
+        return "Ask for a payment date this week and note it."
+    return "A friendly reminder call should do."
+
+
+def _ai_facts(people):
+    """What the AI is told about each customer: nothing that identifies
+    them or any figure that goes in the message."""
+    biggest = max((p["late_value"] for p in people), default=0) or 1
+    facts = []
+    for i, p in enumerate(people, 1):
+        if not p["paid_known"]:
+            paid = "unknown"
+        elif not p["last_paid"]:
+            paid = "no payment received in the last year"
+        else:
+            paid = (f"last payment received {p['paid_days_ago']} days ago, "
+                    + ("after" if p["paid_since_oldest"] else "before") + " the oldest overdue bill")
+        share = p["late_value"] / biggest
+        facts.append({"id": f"C{i}", "oldest_overdue_days": p["days"], "overdue_bills": len(p["bills"]),
+                      "amount_size": "large" if share >= 0.5 else "medium" if share >= 0.15 else "small",
+                      "payment_history": paid})
+    return facts
+
+
+_AI_PROMPT = """You write payment reminders for R. S. Infotech, an IT products and services company in India, to customers whose invoices are overdue, and one line of advice for the person who will phone each customer.
+
+For each customer below, return:
+- "message": a short, polite, professional reminder in Indian business English, ready to send on WhatsApp or by email. Match the firmness to how late they are: friendly at around a month, clearly firm past two months, and past four months firm and asking for a definite payment date, while staying courteous -- they are customers. If they have paid something since the oldest bill, acknowledge it. Use these placeholders exactly once each and nothing else in braces: {NAME} for the customer's name (start with "Dear {NAME},"), {BILLS} on its own line where the list of invoices goes, {TOTAL} where the total amount due goes. End with exactly:
+Accounts Team
+R. S. Infotech
+- "approach": one sentence, under 25 words, advising the caller how to handle this customer.
+
+Rules, which are checked automatically: no digits anywhere, no amounts, no dates, no counts written in words, no invoice numbers, no rupee sign, no links. The figures are filled in afterwards from the accounts. Do not threaten legal action or interest.
+
+Customers:
+FACTS
+
+Reply with only a JSON object mapping each id to {"message": ..., "approach": ...}."""
+
+
+def _ask_claude(prompt):
+    """The model's reply text, or raises. The key is a repository secret."""
+    import urllib.request
+    req = urllib.request.Request(AI_URL, method="POST", data=json.dumps({
+        "model": AI_MODEL, "max_tokens": 8000,
+        "messages": [{"role": "user", "content": prompt}]}).encode(),
+        headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01",
+                 "content-type": "application/json"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        reply = json.load(r)
+    u = reply.get("usage") or {}
+    print(f"AI: {AI_MODEL}, {u.get('input_tokens')} tokens in, {u.get('output_tokens')} out")
+    return "".join(b.get("text", "") for b in reply.get("content") or [] if b.get("type") == "text")
+
+
+def _ai_ok(message, approach):
+    """Whether an AI message can be used: the three placeholders once each,
+    no other braces, and nothing that is or reads as a figure -- the
+    figures come only from Tally."""
+    if any(message.count(k) != 1 for k in ("{NAME}", "{BILLS}", "{TOTAL}")):
+        return False
+    rest = message.replace("{NAME}", "").replace("{BILLS}", "").replace("{TOTAL}", "") + " " + approach
+    return not (re.search(r"\d|[{}]|https?:|www\.", rest) or _NUMBER_WORDS.search(rest)
+                or len(message) > 1500 or len(approach) > 250 or not approach.strip())
+
+
+def _ai_drafts(people):
+    """{index: (message, approach)} from the AI for the customers it wrote
+    usable ones for, and a note on how it went for the email's footer."""
+    if not people:
+        return {}, ""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return {}, "Messages are the standard wording: the AI is switched on by adding the ANTHROPIC_API_KEY secret."
+    try:
+        text = _ask_claude(_AI_PROMPT.replace("FACTS", json.dumps(_ai_facts(people), indent=1)))
+        m = re.search(r"\{.*\}", text, re.S)
+        reply = json.loads(m.group(0)) if m else {}
+    except Exception as ex:
+        print(f"::warning::AI messages not written, standard wording used: {ex}")
+        return {}, "The AI couldn't be reached this week, so the messages are the standard wording."
+    out = {}
+    for i in range(len(people)):
+        d = reply.get(f"C{i + 1}") if isinstance(reply, dict) else None
+        if isinstance(d, dict) and isinstance(d.get("message"), str) and isinstance(d.get("approach"), str) \
+                and _ai_ok(d["message"].strip(), d["approach"].strip()):
+            out[i] = (d["message"].strip(), d["approach"].strip())
+    kept = len(out)
+    note = (f"Message wording and advice by AI ({kept} of {len(people)}; the rest are the standard wording). "
+            f"The AI never sees names or figures: every amount, bill and date is filled in from Tally.")
+    return out, note
+
+
+def _fill(message, p):
+    return (message.replace("{NAME}", p["name"]).replace("{BILLS}", _bills_block(p))
+            .replace("{TOTAL}", inr(p["late_value"])))
+
+
+def _paid_text(p):
+    if not p["paid_known"]:
+        return "Payment history couldn't be read"
+    if not p["last_paid"]:
+        return f"No payment received in the last {RECEIPTS_LOOKBACK_DAYS} days"
+    d, amt = p["last_paid"]
+    return f"Last payment {nice_date(d)} ({inr(amt)})"
+
+
+def _button(href, label, color):
+    return (f'<a href="{e(href)}" style="display:inline-block;background:{color};color:#ffffff;text-decoration:none;'
+            f'font-size:13px;font-weight:600;padding:8px 14px;border-radius:4px;margin:8px 8px 0 0">{e(label)}</a>')
+
+
+def _call_list_report(data, today):
+    """The collection call list (_call_list): (text lines, html body). Each
+    customer is a block -- what's overdue, since when, their last payment,
+    how to approach the call, their overdue bills, and the reminder with a
+    button to send it on WhatsApp (the phone asks which chat) or open it as
+    an email."""
+    import urllib.parse
+    doc, receipts = data["balances"], data.get("receipts")
+    people, more = _call_list(doc, today, receipts)
+    drafts, ai_note = _ai_drafts([p for p in people if not p["check"]])
+    sendable = [p for p in people if not p["check"]]
+    for i, p in enumerate(sendable):
+        msg, approach = drafts.get(i) or (_plain_message(p), _plain_approach(p))
+        p["message"], p["approach"] = _fill(msg, p), approach
+    total = sum(p["late_value"] for p in people)
+    when = ""
+    try:
+        when = datetime.datetime.fromisoformat(doc["as_of"]).astimezone(IST).strftime("%d %b, %I:%M %p")
+    except (KeyError, TypeError, ValueError):
+        pass
+    notes = [f"Most urgent first: each customer's bills {CALL_LIST_MIN_DAYS}+ days old, amount × days past {CALL_LIST_MIN_DAYS}. "
+             f"Read from Tally{' on ' + when if when else ''}.",
+             f"{more} more debtor{' has' if more == 1 else 's have'} bills {CALL_LIST_MIN_DAYS}+ days old; "
+             f"every one {DEBTOR_OVERDUE_DAYS}+ days is in this morning's Debtors Pending {DEBTOR_OVERDUE_DAYS}+ Days."
+             if more else "",
+             "" if receipts is not None else "Payment history couldn't be read this week; the list itself is complete.",
+             "WhatsApp asks which chat to send to; check each message before sending."]
+
+    lines = [f"Customers to call: {len(people)}", f"Overdue {CALL_LIST_MIN_DAYS}+ days: {inr(total)}"] \
+        + [n for n in notes if n] + [""]
+    body = _tiles([("TO CALL", str(len(people)), RED if people else INK),
+                   (f"OVERDUE {CALL_LIST_MIN_DAYS}+ DAYS", inr(total), RED if people else INK),
+                   ("OLDEST", f"{max((p['days'] for p in people), default=0)} days" if people else "-",
+                    RED if people else INK)])
+    body += "".join(_note(n) for n in notes if n)
+    if not people:
+        lines.append(f"No debtor has a bill pending {CALL_LIST_MIN_DAYS} days or more.")
+        body += _note(f"No debtor has a bill pending {CALL_LIST_MIN_DAYS} days or more.")
+    for n, p in enumerate(people, 1):
+        facts = f"Oldest {p['days']} days · {len(p['bills'])} bill{'s' if len(p['bills']) != 1 else ''} · {_paid_text(p)}"
+        lines += [f"{n}. {p['name']} -- {inr(p['late_value'])} overdue" + (f" (under {p['group']})" if p["group"] else ""),
+                  f"   {facts}"]
+        block = (f'<div style="border-top:1px solid {LINE};padding:14px 0 16px">'
+                 f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+                 f'<td style="font-size:15px;font-weight:700;color:{INK};vertical-align:top">{n}. {e(p["name"])}</td>'
+                 f'<td align="right" style="font-size:16px;font-weight:700;color:{RED};white-space:nowrap;'
+                 f'vertical-align:top;padding-left:10px">{e(inr(p["late_value"]))}</td></tr></table>'
+                 f'<div style="font-size:12px;color:{DIM};margin-top:3px">{e(facts)}'
+                 f'{" · under " + e(p["group"]) if p["group"] else ""}'
+                 f'{" · Tally balance " + e(inr(p["balance"])) if p["balance"] is not None else ""}</div>')
+        if p["check"]:
+            lines += [f"   CHECK: {p['check']}", ""]
+            block += (f'<div style="margin-top:8px;font-size:13px;color:#b42318">{e(p["check"])}</div>'
+                      + "".join(f'<div style="font-size:12px;color:{DIM};margin-top:3px">{e(x)}</div>'
+                                for x in _bills_block(p).split("\n")) + "</div>")
+            body += block
+            continue
+        lines += [f"   Approach: {p['approach']}", "", *("   " + x for x in p["message"].split("\n")), ""]
+        subject = f"Payment reminder -- R. S. Infotech"
+        block += (f'<div style="margin-top:8px;font-size:13px;color:{NAVY}"><b>Approach:</b> {e(p["approach"])}</div>'
+                  f'<div style="margin-top:10px;background:{ZEBRA};border:1px solid {LINE};border-left:3px solid {NAVY};'
+                  f'border-radius:4px;padding:10px 12px;font-size:13px;line-height:1.45;color:{INK}">'
+                  f'{e(p["message"]).replace(chr(10), "<br>")}</div>'
+                  + _button("https://wa.me/?text=" + urllib.parse.quote(p["message"]), "Send on WhatsApp", GREEN)
+                  + _button("mailto:?subject=" + urllib.parse.quote(subject) + "&body=" + urllib.parse.quote(p["message"]),
+                            "Open as email", NAVY)
+                  + "</div>")
+        body += block
+    if ai_note:
+        lines.append(ai_note)
+        body += _note(ai_note)
+    return lines, body
+
+
 # Every report: its email subject's name, whether it's a daily report of
 # one day (reads that day's daily_reports document) or a list as it stands
 # now, and how to build it.
@@ -792,13 +1132,14 @@ REPORTS = {
                   lambda rows, today: _pending_report(rows, today, "proforma invoice", with_amount=True)),
     "stock": ("Stock Summary", _stock_report),
     "debtors": ("Debtors Pending 60+ Days", _overdue_debtors_report),
+    "calls": ("Collection Call List", _call_list_report),
 }
 DAILY = ["cash", "bank", "purchase", "sales"]
 # Lists as they stand now, dated the day they're sent (not one day's figures).
-WEEKLY = ["challans", "proformas", "stock", "debtors"]
+WEEKLY = ["challans", "proformas", "stock", "debtors", "calls"]
 # Saturday's three, and the debtors on Monday morning -- moved there at the
 # owner's request so the follow-up calls start the same week.
-GROUPS = {"daily": DAILY, "weekly": ["challans", "proformas", "stock"], "monday": ["debtors"], "all": DAILY}
+GROUPS = {"daily": DAILY, "weekly": ["challans", "proformas", "stock"], "monday": ["debtors", "calls"], "all": DAILY}
 
 
 def build_email(kind, day, report):
@@ -848,10 +1189,20 @@ def read_pending(kind):
     the stock one document too (sync_tally.py, _sync_stock)."""
     if kind == "challans":
         return [d.to_dict() for d in _db().collection(CHALLAN_COLLECTION).stream()]
-    if kind == "debtors":
+    if kind in ("debtors", "calls"):
         snap = _db().collection(PERIOD_COLLECTION).document(PARTY_BALANCES_DOC).get()
         doc = snap.to_dict() if snap.exists else None
-        return doc if doc and (doc.get("debtors") or {}).get("bills_read") else None
+        doc = doc if doc and (doc.get("debtors") or {}).get("bills_read") else None
+        if kind == "debtors" or doc is None:
+            return doc
+        # The call list also says when each customer last paid. Without
+        # that it still goes out, saying so (_call_list_report).
+        try:
+            receipts = read_receipts(datetime.datetime.now(IST).date())
+        except Exception as ex:
+            print(f"::warning::Payments received not read for the call list: {ex}")
+            receipts = None
+        return {"balances": doc, "receipts": receipts}
     if kind == "stock":
         snap = _db().collection(PERIOD_COLLECTION).document(STOCK_DOC).get()
         doc = snap.to_dict() if snap.exists else None

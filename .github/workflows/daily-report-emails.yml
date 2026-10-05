@@ -1,13 +1,16 @@
 # Emails yesterday's Daily Cash Transactions, Daily Bank Transactions,
 # Daily Purchase Entries and Daily Sales Entries every morning, and the
 # Pending Delivery Challans, Pending Proforma Invoices and the Stock Summary
-# every Saturday, and the Debtors Pending 60+ Days every Monday,
+# every Saturday, and the Debtors Pending 60+ Days and the Collection Call
+# List every Monday,
 # one email each, from the figures the Tally sync stored in Firestore -- see
 # .github/scripts/daily_report_emails.py. Runs on GitHub's servers, so it
 # doesn't need any office PC to be on.
 #
 # Needs four repository secrets (Settings > Secrets and variables > Actions):
 # FIREBASE_SERVICE_ACCOUNT, GMAIL_USER, GMAIL_APP_PASSWORD and MAIL_TO.
+# ANTHROPIC_API_KEY is optional: with it, the call list's payment reminders
+# are worded by AI; without it they're standard wording.
 # "Run workflow" on the Actions tab sends them straight away, for any date.
 name: Daily report emails
 
@@ -18,7 +21,7 @@ on:
     - cron: '30 5 * * *'
     # 05:35 UTC on Saturdays: the two pending lists and the stock, just after the daily ones.
     - cron: '35 5 * * 6'
-    # 05:40 UTC on Mondays: the debtors pending 60+ days, for the week's follow-up calls.
+    # 05:40 UTC on Mondays: the debtors pending 60+ days and the call list, for the week's follow-up calls.
     - cron: '40 5 * * 1'
   workflow_dispatch:
     inputs:
@@ -27,9 +30,9 @@ on:
         required: false
         default: ''
       report:
-        description: 'Which emails (daily = the four daily ones, weekly = the two pending lists and the stock, debtors = pending 60+ days)'
+        description: 'Which emails (daily = the four daily ones, weekly = the two pending lists and the stock, debtors = pending 60+ days, calls = collection call list)'
         type: choice
-        options: [daily, weekly, debtors, cash, bank, purchase, sales, challans, proformas, stock]
+        options: [daily, weekly, debtors, calls, cash, bank, purchase, sales, challans, proformas, stock]
         default: daily
 
 # Read the code and nothing else: nothing here pushes, comments or edits the
@@ -56,3 +59,4 @@ jobs:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
