@@ -147,7 +147,7 @@ Ok 'Packages installed.'
 
 # --- 5. Scheduled task ------------------------------------------------------
 Step "Creating the daily $TaskTime sync task"
-$action    = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$dir\run_daily_sync.ps1`""
+$action    = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$dir\run_daily_sync.ps1`""
 $trigger   = New-ScheduledTaskTrigger -Daily -At $TaskTime
 # Runs on battery, and if the PC was off or asleep at the set time it runs as
 # soon as this user is logged on again.

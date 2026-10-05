@@ -149,8 +149,11 @@ if ($fullResync -and $exitCode -eq 0) {
 # here, so every PC already running this sync gets it with nothing done by
 # hand: a task that starts it at logon and every ten minutes after, in case
 # it stopped (a second copy finds the first one's lock and exits at once).
-# pythonw runs it without a window. Registered only when missing, or when
-# the Python it points at has gone, so a running listener isn't disturbed.
+# pythonw runs it without a window. Registered only when missing, when the
+# Python it points at has gone, or when it points at python.exe instead of
+# pythonw.exe -- on the owner's laptop it did, and a black python.exe window
+# popped up over his work each time the task started it. Otherwise a
+# running listener isn't disturbed.
 # Set up and started only after this script's own sync has finished: on
 # 5 Oct 2026 Tally hung twice right at the start of this script, when the
 # listener used to be started just before the sync and could ask Tally
@@ -159,11 +162,18 @@ if ($fullResync -and $exitCode -eq 0) {
 $listenerTask = 'RS Infotech Tally Sync Listener'
 try {
     $existing = Get-ScheduledTask -TaskName $listenerTask -ErrorAction SilentlyContinue
-    if (-not $existing -or -not (Test-Path $existing.Actions[0].Execute)) {
-        $pythonExe = (& python -c "import sys;print(sys.executable)" 2>$null | Select-Object -Last 1)
-        if (-not $pythonExe) { throw 'python could not be run' }
-        $pythonw = Join-Path (Split-Path -Parent $pythonExe.Trim()) 'pythonw.exe'
-        if (-not (Test-Path $pythonw)) { $pythonw = $pythonExe.Trim() }
+    $runs = if ($existing) { $existing.Actions[0].Execute.Trim().Trim('"') } else { '' }
+    $windowed = $existing -and ((Split-Path -Leaf $runs) -ne 'pythonw.exe')
+    if (-not $existing -or -not (Test-Path $runs) -or $windowed) {
+        # pythonw.exe sits next to python.exe in a normal install, and in the
+        # base install's folder when "python" is a venv or the Store's alias.
+        $where = (& python -c "import sys;print(sys.executable);print(sys.base_exec_prefix)" 2>$null)
+        if (-not $where) { throw 'python could not be run' }
+        $pythonExe = ($where | Select-Object -First 1).Trim()
+        $pythonw = @((Join-Path (Split-Path -Parent $pythonExe) 'pythonw.exe'),
+                     (Join-Path ($where | Select-Object -Last 1).Trim() 'pythonw.exe')) |
+                   Where-Object { Test-Path $_ } | Select-Object -First 1
+        if (-not $pythonw) { $pythonw = $pythonExe }
         $action = New-ScheduledTaskAction -Execute $pythonw -Argument "`"$PSScriptRoot\sync_tally.py`" --listen" -WorkingDirectory $PSScriptRoot
         $triggers = @(New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME")
         # Repeating with no end date has to be left implicit, and older
@@ -176,6 +186,10 @@ try {
         Register-ScheduledTask -TaskName $listenerTask -Action $action -Trigger $triggers -Settings $settings `
             -Principal $principal -Force -ErrorAction Stop | Out-Null
         Add-Content -Path $logFile -Encoding ASCII -Value "----- Installed the Sync now listener ($pythonw) -----"
+        # A listener already running in a window is restarted without one.
+        if ($windowed -and (Get-ScheduledTask -TaskName $listenerTask).State -eq 'Running') {
+            Stop-ScheduledTask -TaskName $listenerTask
+        }
     }
     $state = (Get-ScheduledTask -TaskName $listenerTask -ErrorAction Stop).State
     if ($state -ne 'Running' -and $state -ne 'Disabled') {
@@ -183,4 +197,27 @@ try {
     }
 } catch {
     Add-Content -Path $logFile -Encoding ASCII -Value "----- Could not set up the Sync now listener: $($_.Exception.Message) -----"
+}
+
+# --- No window for the daily run either ---------------------------------------
+# The task that runs this script each morning opened a PowerShell window for
+# the length of the sync -- up to a quarter of an hour on the day of a full
+# re-sync, in front of whatever the owner was doing. -WindowStyle Hidden
+# makes it a blink. Whatever the task is called on this PC, it's the one
+# whose action runs this file; this run carries on, the next one is hidden.
+try {
+    $mine = Get-ScheduledTask -ErrorAction Stop | Where-Object {
+        $_.Actions | Where-Object { $_.Execute -like '*powershell*' -and $_.Arguments -like '*run_daily_sync.ps1*' -and
+                                    $_.Arguments -notlike '*-WindowStyle Hidden*' } }
+    foreach ($t in $mine) {
+        $a = $t.Actions[0]
+        $hidden = New-ScheduledTaskAction -Execute $a.Execute -Argument ('-WindowStyle Hidden ' + $a.Arguments)
+        if ($a.WorkingDirectory) {
+            $hidden = New-ScheduledTaskAction -Execute $a.Execute -Argument ('-WindowStyle Hidden ' + $a.Arguments) -WorkingDirectory $a.WorkingDirectory
+        }
+        Set-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -Action $hidden -ErrorAction Stop | Out-Null
+        Add-Content -Path $logFile -Encoding ASCII -Value "----- '$($t.TaskName)' now runs without a window -----"
+    }
+} catch {
+    Add-Content -Path $logFile -Encoding ASCII -Value "----- Could not hide the daily sync's window: $($_.Exception.Message) -----"
 }

@@ -2150,6 +2150,27 @@ def _sync_today_in_subprocess():
     return False, message[:400]
 
 
+def _leave_own_console():
+    """Closes the console window Windows opens when the listener is started
+    with python.exe rather than pythonw.exe -- on the owner's laptop a black
+    "C:\\Users\\...\\python.exe" window popped up in front of his work every
+    time the task (re)started it. Only a console this process has to itself
+    is left: one someone is typing in (sync_tally.py --listen run by hand
+    from PowerShell) has the shell attached too and stays as it is. Output
+    then goes nowhere, which is fine: the listener logs to its file."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        attached = (ctypes.c_uint * 4)()
+        if kernel32.GetConsoleWindow() and kernel32.GetConsoleProcessList(attached, 4) == 1:
+            kernel32.FreeConsole()
+            sys.stdout = sys.stderr = open(os.devnull, "w")
+    except Exception:
+        pass
+
+
 def run_listener():
     """Waits for the dashboard's Sync now button and syncs today when it's
     pressed, and also syncs today once an hour between HOURLY_SYNC_FROM_HOUR
@@ -2382,6 +2403,7 @@ def main():
         logging.basicConfig(level=logging.INFO, format=log_format, handlers=[
             logging.handlers.RotatingFileHandler(os.path.join(SCRIPT_DIR, "sync_listener_log.txt"),
                                                  maxBytes=2_000_000, backupCount=1, encoding="utf-8")])
+        _leave_own_console()
         sys.exit(run_listener())
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format=log_format)
