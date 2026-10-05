@@ -1003,6 +1003,12 @@ def fetch_party_balances(date, dump_raw_dir=None):
             group_closing[name] = _num(grp, "CLOSINGBALANCE")
     ledgers_root = _post_xml(_collection_request("PartyLedgers", "Ledger", ["NAME", "PARENT", "CLOSINGBALANCE"],
                                                  _fy_start(date), date), dump_raw_dir, "party_ledgers")
+    # Tally with the company not loaded answers with empty lists, not an
+    # error -- on 5 Oct that wrote Rs.0 and no parties over the real
+    # figures. No Sundry Debtors group or no ledgers at all can only mean
+    # that, so nothing is written.
+    if "sundry debtors" not in group_parents or not _collection_records(ledgers_root, "LEDGER"):
+        raise TallyError("No Sundry Debtors group or no ledgers returned. " + UNREADABLE_COMPANY_HINT)
     result = {}
     # sign turns Tally's figure (debit negative) into the way each side is read
     for key, root, sign in (("debtors", "sundry debtors", -1), ("creditors", "sundry creditors", 1)):
@@ -1076,6 +1082,10 @@ def fetch_stock_items(date, dump_raw_dir=None):
                       "qty": qty, "qty_text": qty_text.strip(),
                       "value": value})
     items.sort(key=lambda r: -r["value"])
+    # An empty list is what a company Tally can't read looks like -- 5 Oct
+    # wrote "0 items" that way -- so it's treated as a failed read.
+    if not items:
+        raise TallyError("No stock items returned. " + UNREADABLE_COMPANY_HINT)
     return items
 
 
