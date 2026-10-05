@@ -1247,13 +1247,15 @@ def fetch_stock_category_names(date, dump_raw_dir=None):
     return names
 
 
-def _split_by_category(lines, categories):
+def _split_by_category(lines, categories, top_items=frozenset()):
     """Splits a Stock Category Summary's flat run of lines into categories
-    and their items: a line named after a category starts it, every other
-    line is an item of the category before it. Returns (items, checks):
-    checks has one row per category -- its own line's value, and how many
-    items followed it and what they add up to -- and an item's "group" is
-    its category. A category with sub-categories has no items of its own;
+    and their items. A line named after a category starts it; a line in
+    top_items -- an item the plain report lists at the top level, i.e. one
+    with no category -- is an item of no category; every other line is an
+    item of the category before it. Returns (items, checks): checks has one
+    row per category -- its own line's value, and how many items followed
+    it and what they add up to -- and an item's "group" is its category,
+    "" for none. A category with sub-categories has no items of its own;
     its line is checked against nothing and its value isn't counted twice."""
     items, checks, current = [], [], None
     for r in lines:
@@ -1261,6 +1263,8 @@ def _split_by_category(lines, categories):
             current = {"name": r["name"], "value": r["value"], "items": 0, "items_value": 0.0,
                        "parent_only": r["name"] in set(categories.values())}
             checks.append(current)
+        elif r["name"] in top_items:
+            items.append(dict(r, group=""))
         elif current is None:
             checks.append({"name": "(before any category)", "value": 0.0, "items": 1,
                            "items_value": r["value"], "parent_only": False})
@@ -1278,31 +1282,39 @@ def fetch_stock_by_category(date, dump_raw_dir=None, report_checks=None):
     item with its quantity, rate, value and the category it's under -- the
     screen the owner reads stock from (Display > Stock Category Summary).
 
-    Which lines are categories comes from the category masters
-    (fetch_stock_category_names), not from the report's shape: on 5 Oct the
-    plain report already listed each category followed by its items, the
-    way the owner's own Tally screen shows it, so "the plain lines are the
-    categories" counted every item as a category. The plain report is
-    tried first and the exploded one second; the first in which every
-    category's items add up to that category's own line is used. If
-    neither does, StockShapeError is raised -- never a list that counts
-    something twice or leaves something out. report_checks, a list, gets
-    each attempt's per-category check for --test-stock to print."""
+    The report is read twice. The plain one is the top level: each category
+    as one line, and every item with no category as a line of its own --
+    on 5 Oct that was "No." (Rs.58,638.68), the only category, and 216
+    items with none (Rs.3,43,166.43). The exploded one is the same with
+    each category's items after it: "No." and its 15 items, and the same
+    216. Which lines are categories comes from the category masters
+    (fetch_stock_category_names). So in the exploded report a category line
+    starts that category, an item the plain report already listed has no
+    category, and any other item belongs to the category before it.
+
+    Used only when every category's items add up to its own line and all
+    the items add up to the plain report's total -- otherwise
+    StockShapeError, never a list that counts something twice or leaves
+    something out. report_checks, a list, gets the per-category check for
+    --test-stock to print."""
     report = "Stock Category Summary"
     categories = fetch_stock_category_names(date, dump_raw_dir)
-    reasons = []
-    for exploded in (False, True):
-        lines = fetch_stock_summary(date, dump_raw_dir, timeout=STOCK_TIMEOUT_SECONDS, items=exploded, report=report)
-        items, checks = _split_by_category(lines, categories)
-        label = "exploded" if exploded else "plain"
-        if report_checks is not None:
-            report_checks.append((label, len(lines), checks))
-        bad = [c["name"] for c in checks if not c["ok"]]
-        if items and checks and not bad:
-            return round(sum(r["value"] for r in items), 2), items
-        reasons.append(f"{label}: " + (f"{len(bad)} categories don't add up ({', '.join(bad[:3])})" if bad
-                                       else "no items found"))
-    raise StockShapeError("; ".join(reasons))
+    plain = fetch_stock_summary(date, dump_raw_dir, timeout=STOCK_TIMEOUT_SECONDS, report=report)
+    if not plain:
+        raise StockShapeError("Stock Category Summary came back empty")
+    total = round(sum(r["value"] for r in plain), 2)
+    top_items = {r["name"] for r in plain if r["name"] not in categories}
+    exploded = fetch_stock_summary(date, dump_raw_dir, timeout=STOCK_TIMEOUT_SECONDS, items=True, report=report)
+    items, checks = _split_by_category(exploded, categories, top_items)
+    if report_checks is not None:
+        report_checks.append((f"exploded, {len(top_items)} items with no category", len(exploded), checks))
+    bad = [c["name"] for c in checks if not c["ok"]]
+    if bad:
+        raise StockShapeError(f"{len(bad)} categories don't add up ({', '.join(bad[:3])})")
+    items_total = round(sum(r["value"] for r in items), 2)
+    if not items or abs(items_total - total) >= 1:
+        raise StockShapeError(f"{len(items)} items add up to Rs.{items_total:.2f}, not the report's Rs.{total:.2f}")
+    return total, items
 
 
 def _stock_marker(name):
@@ -2123,7 +2135,7 @@ def run_test_stock(items=False, categories=False):
     name = "Stock Category Summary, item by item" if categories else "Stock Summary"
     print(f"\n{name} as at {today:%d %b %Y}: {len(lines)} lines, Tally answered in {took:.1f} s\n")
     for line in lines[:40]:
-        where = f"[{line['group']}] " if categories else ""
+        where = f"[{line['group'] or 'no category'}] " if categories else ""
         print(f"    {(where + line['name'])[:52]:<52} {line['qty_text']:>10} {line.get('rate_text', ''):>12} {rupees(line['value']):>16}")
     if len(lines) > 40:
         print(f"    ... and {len(lines) - 40} more")
