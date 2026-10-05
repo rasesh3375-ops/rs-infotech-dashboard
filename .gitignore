@@ -7,3 +7,5 @@ tally-sync/*_log.txt*
 tally-sync/stock_*.txt
 tally-sync/sync_role.txt
 tally-sync/tally_data_dir.txt
+tally-sync/ledger_openings.json
+tally-sync/openings_paused_until.txt
