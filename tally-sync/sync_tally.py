@@ -1192,6 +1192,53 @@ def fetch_party_balances(date, balances):
     return result
 
 
+def _add_days_pending(result, today, balances, dump_raw_dir=None):
+    """Adds to each party on the Debtors/Creditors tiles its oldest unpaid
+    bill -- "oldest" (YYYY-MM-DD), "days" since it and "bills" pending --
+    from Tally's own Bills Receivable / Bills Payable (fetch_bills). On
+    5 Oct those answered in 1.0 s and 0.2 s.
+
+    Only parties already on the tile get it, matched by name: the bills
+    reports also cover loan and staff ledgers outside Sundry Debtors and
+    Creditors ("Samarth B Patel Loan", "Pravina Narendra Doshi Loan"), which
+    is why their totals ran Rs.25 lakh and Rs.1.1 crore above the groups'.
+    A sub-group's line gets the oldest bill of the parties under it. A
+    party Tally doesn't keep bill by bill simply has no days. Never stops
+    the sync: a failure leaves the balances without days, and a timeout
+    pauses the balance reads like any other (_GroupBalances)."""
+    if balances.stopped:
+        return
+    for key, kind in (("debtors", "receivable"), ("creditors", "payable")):
+        try:
+            bills = fetch_bills(kind, today, dump_raw_dir, timeout=GROUP_SUMMARY_TIMEOUT_SECONDS)
+        except TallyTimeout as e:
+            until = datetime.datetime.now() + datetime.timedelta(hours=BALANCES_PAUSE_HOURS)
+            _write_marker(BALANCES_PAUSE_FILE, until)
+            balances.stopped = f"paused until {until:%d %b %H:%M} after Tally didn't answer in time"
+            log.warning("Bills %s not read, balances paused until %s: %s", kind, until, e)
+            return
+        except TallyError as e:
+            log.warning("Bills %s not read -- %s", kind, e)
+            continue
+        by_party = oldest_bills_by_party(bills, today)
+        under = {}
+        for party, info in by_party.items():
+            parent = _LEDGER_PARENTS.get(party)
+            if parent:
+                u = under.setdefault(parent, {"oldest": info["oldest"], "bills": 0})
+                u["oldest"] = min(u["oldest"], info["oldest"])
+                u["bills"] += info["bills"]
+        dated = 0
+        for row in result[key]["parties"]:
+            info = by_party.get(row["name"]) or under.get(row["name"])
+            if info:
+                row.update(oldest=info["oldest"], bills=info["bills"],
+                           days=(today - datetime.date.fromisoformat(info["oldest"])).days)
+                dated += 1
+        result[key]["bills_read"] = True
+        log.info("Bills %s: %d bills; %d of %d parties dated.", kind, len(bills), dated, len(result[key]["parties"]))
+
+
 def _sync_party_balances(balances, dry_run=False, force=False):
     """Reads and stores today's Sundry Debtors/Creditors: on every daily
     run (force), otherwise at most every PARTY_BALANCES_EVERY_MINUTES.
@@ -1206,6 +1253,7 @@ def _sync_party_balances(balances, dry_run=False, force=False):
     except TallyError as e:
         log.warning("Sundry debtors/creditors not read -- %s", e)
         return
+    _add_days_pending(result, datetime.date.today(), balances, balances.dump_raw_dir)
     log.info("Sundry debtors Rs.%s (%d parties) | Sundry creditors Rs.%s (%d parties)",
              result["debtors"]["total"], result["debtors"]["count"],
              result["creditors"]["total"], result["creditors"]["count"])
