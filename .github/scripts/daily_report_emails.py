@@ -400,14 +400,38 @@ def _stock_rows(doc):
     return items, negative, len(every) - len(items)
 
 
+def _in_stock(items, negative):
+    """The items actually in stock -- the below-zero ones are listed on their
+    own above and not again -- oldest stock first when the sync has worked
+    out each one's age (sync_tally.py, add_stock_ages), then by value."""
+    held = [r for r in items if r not in negative]
+    return sorted(held, key=lambda r: (-(r.get("age_days") if r.get("age_days") is not None else -1),
+                                       -(r.get("value") or 0)))
+
+
+def _age_text(r):
+    """("since" line, days) for an item's age: "In stock since 01 May 2026",
+    or "Opening stock, before 01 Apr 2026" with "187+" days when this
+    year's purchases don't account for all of it."""
+    if r.get("age_days") is None:
+        return "", ""
+    if r.get("from_opening"):
+        return f"Opening stock, before {nice_date(r.get('since'))}", f"{r['age_days']}+"
+    return f"In stock since {nice_date(r.get('since'))}", str(r["age_days"])
+
+
 def _stock_report(doc, today):
     """The stock as the sync last read it from Tally's Stock Category
     Summary (sync_tally.py, _sync_stock): (text lines, html body). Items
     with no stock or no value are left out (_stock_rows), as on the
-    dashboard's Stock tile; items below zero -- sold or issued before the purchase was
-    entered -- are listed first, so they get looked at."""
+    dashboard's Stock tile. Items below zero -- sold or issued before the
+    purchase was entered -- are listed first, so they get looked at, and
+    not again under the items in stock, which come oldest stock first with
+    how many days each has been held (_in_stock)."""
     by_group = doc.get("level") == "group"
     items, negative, left_out = _stock_rows(doc)
+    held = _in_stock(items, negative)
+    aged = any(r.get("age_days") is not None for r in held)
     total = doc.get("total_value") or 0
     noun = "group" if by_group else "item"
     when = ""
@@ -417,20 +441,30 @@ def _stock_report(doc, today):
         pass
     notes = [(f"Read from Tally on {when}." if when else "")
              + (f" {left_out} {noun}s with no stock or no value aren't listed." if left_out else "")]
+    if aged:
+        notes.append("Days = how long the oldest of each item in hand has been in stock, from its purchase "
+                     "entries, first in first out. Oldest stock first.")
     if doc.get("matches") is False:
         notes.append(f"Tally's P&L closing stock is {inr(doc.get('pl_closing_stock'))} -- check in Tally.")
     if doc.get("error"):
         notes.append(f"The latest read from Tally failed ({doc['error']}); these are the last figures read.")
 
-    lines = [f"Stock value: {inr(total)}", f"{noun.capitalize()}s in stock: {len(items)}",
+    lines = [f"Stock value: {inr(total)}", f"{noun.capitalize()}s in stock: {len(held)}",
              f"Below zero: {len(negative)}"] + [n for n in notes if n] + [""]
-    for r in negative + [r for r in items if r not in negative]:
-        lines.append(f"{inr(r.get('value')):>12}  {r.get('qty_text') or '':>9}  {r.get('name') or ''}"
-                     + (f" [{r['group']}]" if not by_group and r.get("group") else ""))
-    if not items:
+    if negative:
+        lines.append("Below zero -- check these in Tally:")
+    for r in negative:
+        lines.append(f"{inr(r.get('value')):>12}  {r.get('qty_text') or '':>9}  {r.get('name') or ''}")
+    if negative:
+        lines += ["", f"All {noun}s in stock:"]
+    for r in held:
+        since, days = _age_text(r)
+        lines.append(f"{(days + 'd') if days else '':>6}  {inr(r.get('value')):>12}  {r.get('qty_text') or '':>9}  "
+                     f"{r.get('name') or ''}" + (f" [{r['group']}]" if not by_group and r.get("group") else ""))
+    if not held:
         lines.append("Nothing in stock.")
 
-    tiles = [("STOCK VALUE", inr(total), INK), (f"{noun.upper()}S IN STOCK", str(len(items)), INK),
+    tiles = [("STOCK VALUE", inr(total), INK), (f"{noun.upper()}S IN STOCK", str(len(held)), INK),
              ("BELOW ZERO", str(len(negative)), RED if negative else INK)]
     body = _tiles(tiles) + "".join(_note(n, warn="check" in n or "failed" in n) for n in notes if n)
 
@@ -440,16 +474,32 @@ def _stock_report(doc, today):
         head, right = ["Stock group", "Quantity", "Value"], (1, 2)
         row = lambda r: [f"<b>{e(r.get('name') or '')}</b>", red(r, e(r.get("qty_text") or "")),
                          red(r, e(inr(r.get("value"))))]
+        held_head, held_right, held_row = head, right, row
     else:
         head, right = ["Item", "Category", "Quantity", "Rate", "Value"], (2, 3, 4)
         row = lambda r: [f"<b>{e(r.get('name') or '')}</b>", e(r.get("group") or ""),
                          red(r, e(r.get("qty_text") or "")), e(_rate(r.get("rate_text"))),
                          red(r, e(inr(r.get("value"))))]
+        if aged:
+            # Days before Value: on a phone the last column is the amount on
+            # the right of each block (_cards).
+            held_head, held_right = ["Item", "Category", "Quantity", "Rate", "Days", "Value"], (2, 3, 4, 5)
+
+            def held_row(r):
+                since, days = _age_text(r)
+                return [f"<b>{e(r.get('name') or '')}</b>"
+                        + (f'<div style="color:{DIM};font-size:12px">{e(since)}</div>' if since else ""),
+                        e(r.get("group") or ""), e(r.get("qty_text") or ""), e(_rate(r.get("rate_text"))),
+                        f'<span style="font-weight:700">{e(days)}d</span>' if days else "",
+                        e(inr(r.get("value")))]
+        else:
+            held_head, held_right, held_row = head, right, row
     if negative:
         body += (f'<div style="font-size:14px;font-weight:700;color:{RED};margin:14px 0 2px">'
                  f'Below zero -- check these in Tally</div>') + _table(head, [row(r) for r in negative], right)
         body += f'<div style="font-size:14px;font-weight:700;color:{INK};margin:14px 0 2px">All {noun}s in stock</div>'
-    body += _table(head, [row(r) for r in items] or [["Nothing in stock."] + [""] * (len(head) - 1)], right)
+    body += _table(held_head, [held_row(r) for r in held] or [["Nothing in stock."] + [""] * (len(held_head) - 1)],
+                   held_right)
     return lines, body
 
 
@@ -638,26 +688,45 @@ def _pdf(title, today, summary, sections, footer_name):
 
 def stock_pdf(doc, today):
     """The stock email's list as a PDF: the same items (_stock_rows),
-    below-zero ones first in red, then every item with its category,
-    quantity, rate and value, and the total."""
+    below-zero ones first in red, then the items in stock -- not the
+    below-zero ones again -- oldest stock first with the date and days
+    each has been held (_in_stock), with the total."""
     by_group = doc.get("level") == "group"
     items, negative, left_out = _stock_rows(doc)
+    held = _in_stock(items, negative)
+    aged = any(r.get("age_days") is not None for r in held)
     noun = "group" if by_group else "item"
     if by_group:
         header, widths, right_from = ["Stock group", "Quantity", "Value"], [100, 35, 45], 1
         cells = lambda r: [r.get("name") or "", r.get("qty_text") or "", inr(r.get("value"))]
+        held_header, held_widths, held_cells = header, widths, cells
     else:
         header, widths, right_from = ["Item", "Category", "Quantity", "Rate", "Value"], [78, 22, 22, 28, 30], 2
         cells = lambda r: [r.get("name") or "", r.get("group") or "", r.get("qty_text") or "",
                            _rate(r.get("rate_text")), inr(r.get("value"))]
+        if aged:
+            held_header, held_widths = ["Item", "Category", "Quantity", "Rate", "Since", "Days", "Value"], \
+                [50, 18, 18, 24, 30, 14, 26]
+
+            def held_cells(r):
+                since, days = _age_text(r)
+                return [r.get("name") or "", r.get("group") or "", r.get("qty_text") or "",
+                        _rate(r.get("rate_text")),
+                        ("Opening stock" if r.get("from_opening") else nice_date(r.get("since"))) if since else "",
+                        days, inr(r.get("value"))]
+        else:
+            held_header, held_widths, held_cells = header, widths, cells
     when = ""
     try:
         when = datetime.datetime.fromisoformat(doc["as_of"]).astimezone(IST).strftime("%d %b %Y, %I:%M %p")
     except (KeyError, TypeError, ValueError):
         pass
     summary = [f"As on {today:%A, %d %b %Y}" + (f" · read from Tally {when}" if when else ""),
-               f"Stock value {inr(doc.get('total_value') or 0)} · {len(items)} {noun}s in stock · "
+               f"Stock value {inr(doc.get('total_value') or 0)} · {len(held)} {noun}s in stock · "
                f"{len(negative)} below zero" + (f" · {left_out} with no stock or no value not listed" if left_out else "")]
+    if aged:
+        summary.append("Days = how long the oldest of each item in hand has been in stock (first in, first out). "
+                       "Oldest stock first.")
     if doc.get("matches") is False:
         summary.append(f"Tally's P&L closing stock is {inr(doc.get('pl_closing_stock'))} – check in Tally.")
     wrap = (0, 1) if not by_group else (0,)
@@ -666,10 +735,9 @@ def stock_pdf(doc, today):
         sections.append(dict(heading="Below zero – check these in Tally", heading_red=True, header=header,
                              rows=[cells(r) for r in negative], widths=widths, right_from=right_from, wrap=wrap,
                              red=range(1, len(negative) + 1)))
-    sections.append(dict(heading=f"All {noun}s in stock", header=header, rows=[cells(r) for r in items],
-                         widths=widths, right_from=right_from, wrap=wrap,
-                         red=[i for i, r in enumerate(items, start=1) if r in negative],
-                         total=["Total"] + [""] * (len(header) - 2) + [inr(doc.get("total_value") or 0)]))
+    sections.append(dict(heading=f"All {noun}s in stock", header=held_header, rows=[held_cells(r) for r in held],
+                         widths=held_widths, right_from=right_from, wrap=wrap,
+                         total=["Total stock value"] + [""] * (len(held_header) - 2) + [inr(doc.get("total_value") or 0)]))
     return _pdf("Stock Summary", today, summary, sections, "Stock Summary")
 
 

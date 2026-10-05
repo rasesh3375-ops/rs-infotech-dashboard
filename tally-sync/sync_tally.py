@@ -1507,6 +1507,58 @@ def fetch_stock_by_category(date, dump_raw_dir=None, report_checks=None):
     return total, items
 
 
+# Voucher types that bring stock in, for the age of what's in stock.
+STOCK_INWARD_BASES = {"purchase", "receipt note", "credit note", "stock journal", "material in", "rejections in"}
+
+
+def _leading_qty(text):
+    m = re.match(r"\s*(-?[\d,]*\.?\d+)", text or "")
+    return float(m.group(1).replace(",", "")) if m else 0.0
+
+
+def add_stock_ages(items, vouchers, type_parents, today):
+    """Adds to each item held in stock "since" (YYYY-MM-DD) and "age_days":
+    how long the oldest of what's in hand has been there, first in first
+    out. Walking the item's inward entries -- purchases, receipt notes,
+    sales returns, the inward side of a stock journal -- from the newest
+    back, the date at which they add up to the quantity held is when the
+    oldest unit still in stock came in. When this year's inward entries
+    don't reach the quantity held, the rest is opening stock: "since" is
+    the first day of the financial year and "from_opening" is set, so it
+    reads "before 1 April". For the weekly stock email, oldest first."""
+    fy = _fy_start(today)
+    inward = {}
+    for v in vouchers or []:
+        base = type_parents.get(_text(v, "VOUCHERTYPENAME").strip().lower())
+        if base not in STOCK_INWARD_BASES or _text(v, "ISOPTIONAL").lower() == "yes" \
+                or _text(v, "ISCANCELLED").lower() == "yes":
+            continue
+        day = _tally_date_to_iso(_text(v, "DATE"))
+        for inv in v.findall(".//ALLINVENTORYENTRIES.LIST"):
+            if _text(inv, "ISDEEMEDPOSITIVE").lower() == "no":
+                continue          # the outward side of a stock journal
+            name = (inv.get("NAME") or _text(inv, "STOCKITEMNAME") or "").strip()
+            qty = abs(_leading_qty(_text(inv, "ACTUALQTY") or _text(inv, "BILLEDQTY")))
+            if name and qty and day <= today.isoformat():
+                inward.setdefault(name, []).append((day, qty))
+    for item in items:
+        held = _leading_qty(item.get("qty_text"))
+        if held <= 0:
+            continue
+        reached, since = 0.0, None
+        for day, qty in sorted(inward.get(item.get("name"), []), reverse=True):
+            reached += qty
+            since = day
+            if reached >= held - 1e-9:
+                break
+        from_opening = reached < held - 1e-9
+        if from_opening:
+            since = fy.isoformat()
+        item.update(since=since, from_opening=from_opening,
+                    age_days=(today - datetime.date.fromisoformat(since)).days)
+    return items
+
+
 def _stock_marker(name):
     return os.path.join(SCRIPT_DIR, name)
 
@@ -1524,7 +1576,7 @@ def _write_marker(name, when):
         f.write(when.isoformat())
 
 
-def _sync_stock(date, pl_closing_stock=None, dry_run=False, dump_raw_dir=None):
+def _sync_stock(date, pl_closing_stock=None, dry_run=False, dump_raw_dir=None, vouchers=None, type_parents=None):
     """Reads the stock by group from Tally's Stock Summary and stores it, as
     carefully as Tally needs:
       - at most once every STOCK_MIN_HOURS, however often syncs run -- the
@@ -1570,6 +1622,8 @@ def _sync_stock(date, pl_closing_stock=None, dry_run=False, dump_raw_dir=None):
         log.warning("Stock not read -- %s", e)
         return
     took = time.time() - started
+    if level == "item" and vouchers:
+        add_stock_ages(groups, vouchers, type_parents or {}, date)
     if pl_closing_stock is None:
         try:
             pl_closing_stock = fetch_profit_and_loss(date, dump_raw_dir).get("closing_stock")
@@ -1874,7 +1928,8 @@ def run(date, dry_run=False, dump_raw_dir=None):
     # Two Stock Summary requests of 0.1-0.2 s each, and _sync_stock asks at
     # most every STOCK_MIN_HOURS however often this runs.
     if STOCK_ENABLED:
-        _sync_stock(date, (payload.get("profit_and_loss") or {}).get("closing_stock"), dump_raw_dir=dump_raw_dir)
+        _sync_stock(date, (payload.get("profit_and_loss") or {}).get("closing_stock"), dump_raw_dir=dump_raw_dir,
+                    vouchers=all_vouchers, type_parents=voucher_type_parents)
 
 
 def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
@@ -1947,7 +2002,8 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
     # As of today, like the party balances; the backfill's last day is
     # yesterday, so there's no P&L for today at hand to check it against.
     if STOCK_ENABLED:
-        _sync_stock(datetime.date.today(), None, dry_run=dry_run, dump_raw_dir=dump_raw_dir)
+        _sync_stock(datetime.date.today(), None, dry_run=dry_run, dump_raw_dir=dump_raw_dir,
+                    vouchers=all_vouchers, type_parents=voucher_type_parents)
 
 
 # ---------------------------------------------------------------------------
