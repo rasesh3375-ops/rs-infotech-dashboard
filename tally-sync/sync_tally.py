@@ -123,6 +123,13 @@ BALANCE_DAYS = 8
 OPENINGS_FILE = "ledger_openings.json"
 OPENINGS_TIMEOUT_SECONDS = 60
 OPENINGS_PAUSE_DAYS = 7
+# Off: the first --test-balances on the laptop (5 Oct) hung Tally too, so
+# no sync asks Tally for opening balances until that request is shown to be
+# safe. Python giving up after OPENINGS_TIMEOUT_SECONDS doesn't help Tally,
+# which carries on working the answer out with nobody waiting for it. While
+# this is off the syncs use a saved OPENINGS_FILE if there is one, and
+# otherwise leave the balances out rather than ask.
+OPENINGS_FROM_TALLY = False
 # Voucher base types that post to the books. Orders, delivery and receipt
 # notes, stock journals, memorandum and reversing journals don't, and
 # neither does an optional or cancelled voucher of any type.
@@ -992,7 +999,7 @@ def get_ledger_openings(date, may_ask_tally, dry_run=False, dump_raw_dir=None):
     None when there's no copy for this year yet."""
     fy = _fy_start(date)
     saved = _load_openings(fy)
-    if not may_ask_tally or (saved and saved.get("read_on") == datetime.date.today().isoformat()):
+    if not OPENINGS_FROM_TALLY or not may_ask_tally or (saved and saved.get("read_on") == datetime.date.today().isoformat()):
         return saved
     paused_until = _read_marker("openings_paused_until.txt")
     if paused_until and paused_until > datetime.datetime.now():
