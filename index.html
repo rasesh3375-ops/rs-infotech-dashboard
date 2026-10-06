@@ -88,6 +88,21 @@
      room before scrolling. */
   .voucher-detail-panel.tall{ max-height:420px; }
 
+  /* A search box at the top of every opened tile, so one party, item or
+     bill can be found in a list of 150 without scrolling. It filters the
+     rows already on screen and changes nothing else -- the figures, the
+     Share menu and the emails all still use the whole list. */
+  .tile-search{ position:sticky; top:-12px; z-index:2; background:var(--panel); display:flex; align-items:center; gap:8px; padding:0 0 8px; margin-top:-2px; }
+  .tile-search input{
+    flex:1 1 auto; min-width:0; font:inherit; font-size:14px; padding:7px 10px 7px 30px; border:1px solid var(--panel-edge); border-radius:8px;
+    background:var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='7' cy='7' r='5'/%3E%3Cpath d='m11 11 4 4'/%3E%3C/svg%3E") no-repeat 9px center;
+    color:var(--text); outline:none;
+  }
+  .tile-search input:focus{ border-color:#14539a; box-shadow:0 0 0 3px rgba(20,83,154,0.12); }
+  .tile-search-count{ font-size:12px; color:var(--text-dim); white-space:nowrap; }
+  .tile-search-none{ display:none; padding:12px 4px; font-size:13px; color:var(--text-dim); }
+  table.datatable tr[hidden]{ display:none !important; }
+
   .period-bar{
     display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
     background:var(--panel); border:1px solid var(--panel-edge); border-radius:12px; padding:6px 12px; margin:0 0 10px;
@@ -1672,6 +1687,47 @@ wireExpandableCard('challanCard', 'challanDetail');
 wireExpandableCard('debtorsCard', 'debtorsDetail');
 wireExpandableCard('stockCard', 'stockDetail');
 wireExpandableCard('creditorsCard', 'creditorsDetail');
+
+// A search box in every tile that opens (the owner's request, 6 Oct 2026).
+// It hides the rows that don't match what's typed: every word has to
+// appear somewhere in the row -- party, item, description, voucher or bill
+// number, date or amount -- so "voltamp amc" finds Voltamp's AMC bills.
+// Commas and the rupee sign are ignored, so 59000 finds ₹59,000. The rows
+// are re-rendered on every sync; the observer filters the new ones by
+// what's still in the box.
+function addTileSearch(panelId){
+  const panel = document.getElementById(panelId);
+  const body = panel.querySelector('tbody');
+  const box = document.createElement('div');
+  box.className = 'tile-search';
+  box.innerHTML = '<input type="search" placeholder="Search party, item, number or amount" autocomplete="off" enterkeyhint="search" aria-label="Search this list">' +
+    '<span class="tile-search-count"></span>';
+  panel.insertBefore(box, panel.firstChild);
+  const none = document.createElement('div');
+  none.className = 'tile-search-none';
+  panel.appendChild(none);
+  const input = box.querySelector('input'), count = box.querySelector('.tile-search-count');
+  const norm = (t) => t.toLowerCase().replace(/[,₹]/g, '').replace(/\s+/g, ' ');
+  const apply = () => {
+    const words = norm(input.value).trim().split(' ').filter(Boolean);
+    const rows = [...body.rows].filter(r => !r.querySelector('.empty-note'));
+    let shown = 0;
+    for (const r of rows){
+      const text = norm(r.textContent);
+      const hit = words.every(w => text.includes(w));
+      r.hidden = !hit;
+      if (hit) shown++;
+    }
+    count.textContent = words.length ? shown + ' of ' + rows.length : '';
+    none.textContent = 'Nothing matches “' + input.value.trim() + '”.';
+    none.style.display = words.length && rows.length && !shown ? 'block' : 'none';
+  };
+  input.addEventListener('input', apply);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Escape'){ input.value = ''; apply(); } });
+  new MutationObserver(apply).observe(body, { childList: true });
+}
+['salesDetail', 'purchaseDetail', 'stockDetail', 'cashDetail', 'bankDetail',
+ 'debtorsDetail', 'creditorsDetail', 'challanDetail', 'proformaDetail'].forEach(addTileSearch);
 
 // Today means today's own figures: it goes back to Daily as well. It used
 // to keep whatever period was selected, so after Monthly it stayed on the
