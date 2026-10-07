@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Emails the owner one day's reports every morning, one email each, from the
+Emails the owner the day's reports every evening at 6:45 PM, one email each, from the
 figures the Tally sync has already stored in Firestore (daily_reports):
 
   Daily Cash Transactions   opening, in, out, closing cash in hand, every voucher
@@ -36,7 +36,7 @@ repository is public:
                             list's reminders; without it they're standard wording
 
 Usage:
-  python daily_report_emails.py                        # the four daily ones, for yesterday (India time)
+  python daily_report_emails.py                        # the four daily ones, for today (India time)
   python daily_report_emails.py 2026-10-03             # the four daily ones, for a given day
   python daily_report_emails.py --report=weekly        # the two pending lists and the stock, as they stand now
   python daily_report_emails.py --report=monday        # the debtors pending 60+ days and the call list
@@ -1142,12 +1142,14 @@ WEEKLY = ["challans", "proformas", "stock", "debtors", "calls"]
 GROUPS = {"daily": DAILY, "weekly": ["challans", "proformas", "stock"], "monday": ["debtors", "calls"], "all": DAILY}
 
 
-def build_email(kind, day, report):
+def build_email(kind, day, report, sync_note=""):
     """(subject, plain text, html) for one report and day. For a daily
     report, report is the day's daily_reports document, or None when that
     day was never synced; for a pending list it's the list (None when it
     was never synced) and day is the day it's sent. The subject is the
-    report's name and the date, and only that."""
+    report's name and the date, and only that. sync_note, for a daily
+    report, says the Tally PC didn't answer this evening's sync request
+    (request_sync) and goes at the top in red."""
     name, build = REPORTS[kind]
     label = day.strftime("%A, %d %b %Y")
     subject = f"{name} - {day:%d %b %Y}"
@@ -1160,11 +1162,30 @@ def build_email(kind, day, report):
         return subject, text, _wrap(name, "as on " + label, body)
     if report is None:
         msg = ("This day hasn't been synced from Tally yet, so there are no figures to send. "
-               "The Tally PC may have been off or Tally closed at the 10 AM sync.")
+               "The Tally PC may have been off or Tally closed all day.")
         return subject, f"R. S. Infotech -- {name} for {label}\n\n{msg}\n\n{DASHBOARD_URL}", _wrap(name, label, f"<p>{e(msg)}</p>")
     lines, body = build(report)
-    text = "\n".join([f"R. S. Infotech -- {name} for {label}", ""] + lines + ["", DASHBOARD_URL])
-    return subject, text, _wrap(name, label, body)
+    # Sent the same evening, so say how up to date it is: an entry made in
+    # Tally after this time isn't in it.
+    when = _synced_when(report)
+    synced = f"Synced from Tally at {when}." if when else ""
+    head = [sync_note] if sync_note else []
+    text = "\n".join([f"R. S. Infotech -- {name} for {label}", ""] + head + lines
+                     + (["", synced] if synced else []) + ["", DASHBOARD_URL])
+    return subject, text, _wrap(name, label, _note(sync_note, warn=True) + body + _note(synced))
+
+
+def _synced_when(report):
+    """"6:47 PM" (or "07 Oct, 6:47 PM" for another day) from a daily
+    report's synced_at -- the Tally PC's own clock, India time, written
+    without a zone."""
+    try:
+        t = datetime.datetime.fromisoformat(report["synced_at"])
+    except (KeyError, TypeError, ValueError):
+        return ""
+    t = t.replace(tzinfo=IST) if t.tzinfo is None else t.astimezone(IST)
+    clock = t.strftime("%I:%M %p").lstrip("0")
+    return clock if t.date().isoformat() == report.get("date") else t.strftime("%d %b, ") + clock
 
 
 # --- reading and sending ----------------------------------------------------
@@ -1180,6 +1201,43 @@ def _db():
     if not firebase_admin._apps:
         firebase_admin.initialize_app(credentials.Certificate(json.loads(os.environ["FIREBASE_SERVICE_ACCOUNT"])))
     return firestore.client()
+
+
+# How long the evening emails wait for the Tally PC to answer the sync
+# request. A sync of today takes a minute or two; the PC's listener looks
+# for a request every 20 seconds or so.
+SYNC_WAIT_MINUTES = 15
+
+
+def request_sync():
+    """Asks the Tally PC to sync today now -- the dashboard's Sync now
+    button, pressed by the 6:45 PM emails so entries made since the last
+    sync are in them -- and waits for it to finish. Returns "" when it did,
+    or a note for the top of each email saying why the figures may be
+    behind; the emails go either way."""
+    from firebase_admin import firestore
+    import time
+    import uuid
+    control = _db().collection("sync_control")
+    request_id = "email-" + uuid.uuid4().hex[:10]
+    try:
+        control.document("request").set({"request_id": request_id, "requested_at": firestore.SERVER_TIMESTAMP,
+                                         "requested_by": "6:45 PM emails"})
+    except Exception as ex:
+        print(f"::warning::Sync request not sent: {ex}")
+        return "These are the figures as last synced: the Tally PC couldn't be asked to sync before sending."
+    deadline = time.time() + SYNC_WAIT_MINUTES * 60
+    while time.time() < deadline:
+        time.sleep(15)
+        snap = control.document("status").get()
+        st = (snap.to_dict() or {}) if snap.exists else {}
+        if st.get("handled_request_id") == request_id and st.get("state") == "idle":
+            print("Tally PC synced: " + ("ok" if st.get("ok") else f"FAILED -- {st.get('message')}"))
+            return "" if st.get("ok") else ("The Tally PC's sync before sending failed, so these are the "
+                                            "figures as last synced -- see the time at the bottom.")
+    print(f"::warning::Tally PC didn't finish a sync within {SYNC_WAIT_MINUTES} minutes")
+    return ("The Tally PC didn't answer the sync before sending (off, logged out or Tally closed), "
+            "so these are the figures as last synced -- see the time at the bottom.")
 
 
 def read_pending(kind):
@@ -1234,7 +1292,7 @@ def send(subject, text, html_body, attachments=()):
 def main():
     dry_run = "--dry-run" in sys.argv
     # Until the four secrets are added the scheduled run would fail every
-    # morning, and each failure is an email from GitHub; say what's missing
+    # day, and each failure is an email from GitHub; say what's missing
     # once in the run's summary and stop quietly instead.
     missing = [k for k in ("FIREBASE_SERVICE_ACCOUNT", "GMAIL_USER", "GMAIL_APP_PASSWORD", "MAIL_TO") if not os.environ.get(k)]
     if missing and not dry_run:
@@ -1255,7 +1313,10 @@ def main():
             kinds = list(dict.fromkeys(kinds)) or list(DAILY)
     dates = [a for a in sys.argv[1:] if not a.startswith("--") and a]
     today = datetime.datetime.now(IST).date()
-    day = datetime.date.fromisoformat(dates[0]) if dates else today - datetime.timedelta(days=1)
+    day = datetime.date.fromisoformat(dates[0]) if dates else today
+    sync_note = ""
+    if any(k in DAILY for k in kinds) and day == today and not dry_run:
+        sync_note = request_sync()
     report = read_report(day) if any(k in DAILY for k in kinds) else None
     failed = []
     # One email per report; one failing to send doesn't stop the others.
@@ -1271,7 +1332,7 @@ def main():
                 attachments.append((f"Debtors Pending {DEBTOR_OVERDUE_DAYS}+ Days {today:%d %b %Y}.pdf",
                                     debtors_pdf(listed, today)))
         else:
-            subject, text, html_body = build_email(kind, day, report)
+            subject, text, html_body = build_email(kind, day, report, sync_note)
         if dry_run:
             print(f"=== {subject}\n{text}\n")
             continue

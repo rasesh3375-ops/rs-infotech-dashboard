@@ -1,5 +1,6 @@
-# Emails yesterday's Daily Cash Transactions, Daily Bank Transactions,
-# Daily Purchase Entries and Daily Sales Entries every morning, and the
+# Emails the day's Daily Cash Transactions, Daily Bank Transactions,
+# Daily Purchase Entries and Daily Sales Entries every evening at 6:45 PM
+# (after asking the Tally PC to sync), and the
 # Pending Delivery Challans, Pending Proforma Invoices and the Stock Summary
 # every Saturday, and the Debtors Pending 60+ Days and the Collection Call
 # List every Monday,
@@ -16,17 +17,18 @@ name: Daily report emails
 
 on:
   schedule:
-    # 05:30 UTC is 11:00 AM in India, after the 10 AM Tally sync. GitHub
+    # 13:15 UTC is 6:45 PM in India: the same day's entries, asked for by
+    # the owner on 7 Oct 2026 (it was 11 AM, for the day before). GitHub
     # can start scheduled runs a little late at busy times.
-    - cron: '30 5 * * *'
-    # 05:35 UTC on Saturdays: the two pending lists and the stock, just after the daily ones.
+    - cron: '15 13 * * *'
+    # 05:35 UTC on Saturdays (11:05 AM in India): the two pending lists and the stock.
     - cron: '35 5 * * 6'
     # 05:40 UTC on Mondays: the debtors pending 60+ days and the call list, for the week's follow-up calls.
     - cron: '40 5 * * 1'
   workflow_dispatch:
     inputs:
       date:
-        description: 'Day to send (YYYY-MM-DD). Leave empty for yesterday.'
+        description: 'Day to send (YYYY-MM-DD). Leave empty for today.'
         required: false
         default: ''
       report:
