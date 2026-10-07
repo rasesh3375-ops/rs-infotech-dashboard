@@ -129,6 +129,7 @@ $files = [ordered]@{
     'sync_tally.py'      = 'def run_check'
     'run_daily_sync.ps1' = 'python_path.txt'
     'requirements.txt'   = 'firebase-admin'
+    'run_hidden.pyw'     = 'CREATE_NO_WINDOW'
 }
 foreach ($name in $files.Keys) {
     $tmp = Join-Path $dir "$name.download"
@@ -151,7 +152,11 @@ Ok 'Packages installed.'
 
 # --- 5. Scheduled task ------------------------------------------------------
 Step "Creating the daily $TaskTime sync task"
-$action    = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$dir\run_daily_sync.ps1`""
+# Started by pythonw.exe through run_hidden.pyw, so no window opens at all:
+# powershell.exe -WindowStyle Hidden still showed one on Windows 11.
+$pythonw = Join-Path (Split-Path -Parent $python) 'pythonw.exe'
+$action    = if (Test-Path $pythonw) { New-ScheduledTaskAction -Execute $pythonw -Argument "`"$dir\run_hidden.pyw`"" -WorkingDirectory $dir }
+             else { New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$dir\run_daily_sync.ps1`"" }
 $trigger   = New-ScheduledTaskTrigger -Daily -At $TaskTime
 # Runs on battery, and if the PC was off or asleep at the set time it runs as
 # soon as this user is logged on again.
