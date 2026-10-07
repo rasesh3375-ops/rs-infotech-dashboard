@@ -2265,15 +2265,18 @@ def _sync_today_in_subprocess():
 
 
 def _leave_own_console():
-    """Closes the console window Windows opens when the listener is started
-    with python.exe rather than pythonw.exe -- on the owner's laptop a black
-    "C:\\Users\\...\\python.exe" window popped up in front of his work every
-    time the task (re)started it. Only a console this process has to itself
-    is left: one someone is typing in (sync_tally.py --listen run by hand
-    from PowerShell) has the shell attached too and stays as it is. Output
-    then goes nowhere, which is fine: the listener logs to its file."""
+    """Closes the console window Windows opens when this is started with
+    python.exe rather than pythonw.exe -- on the owner's laptop a black
+    "C:\\Users\\...\\python.exe" window popped up in front of his work,
+    first when the task (re)started the listener and then, on 7 Oct 2026 at
+    5:20 PM, for a whole sync of today with every Tally request scrolling
+    past. Only a console this process has to itself is left: one someone is
+    typing in (sync_tally.py --check run by hand from PowerShell), or the
+    daily task's own cmd, has the shell attached too and stays as it is.
+    Output then goes nowhere, so the caller logs to a file instead. Returns
+    whether it left one."""
     if os.name != "nt":
-        return
+        return False
     try:
         import ctypes
         kernel32 = ctypes.windll.kernel32
@@ -2281,8 +2284,30 @@ def _leave_own_console():
         if kernel32.GetConsoleWindow() and kernel32.GetConsoleProcessList(attached, 4) == 1:
             kernel32.FreeConsole()
             sys.stdout = sys.stderr = open(os.devnull, "w")
+            return True
     except Exception:
         pass
+    return False
+
+
+def _parent_program():
+    """The program that started this one ("C:\\...\\svchost.exe" for a
+    scheduled task, "...\\pythonw.exe" for the listener, "...\\explorer.exe"
+    for a double-click), for the log when a run arrived with a window of
+    its own -- so the next one can be traced to whatever started it."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, os.getppid())   # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return f"process {os.getppid()}"
+        name, size = ctypes.create_unicode_buffer(1024), wintypes.DWORD(1024)
+        ok = kernel32.QueryFullProcessImageNameW(handle, 0, name, ctypes.byref(size))
+        kernel32.CloseHandle(handle)
+        return name.value if ok else f"process {os.getppid()}"
+    except Exception:
+        return "unknown"
 
 
 def run_listener():
@@ -2520,7 +2545,16 @@ def main():
         _leave_own_console()
         sys.exit(run_listener())
 
-    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format=log_format)
+    # A sync that arrived in a window of its own works in the background
+    # like the listener: the window goes and the log goes to a file.
+    if _leave_own_console():
+        logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format=log_format, handlers=[
+            logging.handlers.RotatingFileHandler(os.path.join(SCRIPT_DIR, "sync_run_log.txt"),
+                                                 maxBytes=1_000_000, backupCount=1, encoding="utf-8")])
+        log.info("Started in a window of its own by %s (%s) -- closed it, logging here instead.",
+                 _parent_program(), " ".join(sys.argv))
+    else:
+        logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format=log_format)
 
     if args.check:
         sys.exit(run_check())
