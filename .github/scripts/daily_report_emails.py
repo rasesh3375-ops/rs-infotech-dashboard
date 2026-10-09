@@ -1142,18 +1142,39 @@ BRIEFING_TOP = 3
 BRIEFING_COLOURS = {"good": GREEN, "bad": RED, "watch": "#c77700", "info": DIM}
 
 
+def _books(doc, kind):
+    """A day's sales or purchases before GST: Tally's own Sales or Purchase
+    Accounts, the figure the dashboard's tiles and the P&L show. Adding up
+    the day's invoices is the fallback only for a day synced before the
+    books were kept: on 9 Oct 2026 seven October days had lost their
+    invoices to a wrong read (sync_tally.py, _refuse_wrong_period) while
+    their books stayed right, and the briefing's first run put October's
+    sales at Rs.7.8 lakh against Tally's Rs.89.7 lakh."""
+    books = doc.get("books") or doc.get("profit_and_loss") or {}
+    value = books.get(kind + "_accounts")
+    return value if isinstance(value, (int, float)) else (doc.get(kind) or {}).get("total") or 0
+
+
 def read_day_totals(day):
     """{date: {"sales": ..., "purchase": ...}} -- each synced day's sales
-    and purchase totals with GST, from the first of last month (or
-    BRIEFING_BASELINE_DAYS back, if earlier) up to day. Only those two
-    figures of each day are fetched."""
+    and purchases before GST (_books), from the first of last month (or
+    BRIEFING_BASELINE_DAYS back, if earlier) up to day. Only those figures
+    of each day are fetched."""
     start = min((day.replace(day=1) - datetime.timedelta(days=1)).replace(day=1),
                 day - datetime.timedelta(days=BRIEFING_BASELINE_DAYS))
     out = {}
-    for snap in _db().collection(COLLECTION).select(["sales.total", "purchase.total"]).stream():
+    lists = ("sales", "purchase", "proforma", "cash_vouchers", "bank_vouchers")
+    fields = ["books", "profit_and_loss.sales_accounts", "profit_and_loss.purchase_accounts", "sales.total",
+              "purchase.total"] + [k + ".count" for k in lists]
+    for snap in _db().collection(COLLECTION).select(fields).stream():
         if start.isoformat() <= snap.id <= day.isoformat():
             d = snap.to_dict() or {}
-            out[snap.id] = {k: (d.get(k) or {}).get("total") or 0 for k in ("sales", "purchase")}
+            out[snap.id] = {k: _books(d, k) for k in ("sales", "purchase")}
+            # Totals but not one voucher: the day's lists were lost to a
+            # wrong read, and the laptop syncs it again (sync_tally.py,
+            # _wrongly_empty).
+            out[snap.id]["no_entries"] = (not any((d.get(k) or {}).get("count") for k in lists)
+                                          and (abs(out[snap.id]["sales"]) >= 0.5 or abs(out[snap.id]["purchase"]) >= 0.5))
     return out
 
 
@@ -1229,22 +1250,23 @@ def _briefing_today(report, totals, day, sync_note):
     # The middle day, not the mean: one big order -- Rs.94 lakh on one day
     # in October 2026 -- would otherwise make every other day look poor.
     avg = lambda k: statistics.median(t[k] for t in earlier) if len(earlier) >= 5 else 0
-    tiles = [("SALES", inr(sales.get("total")), INK), ("PURCHASES", inr(purchase.get("total")), INK),
+    sold, bought = _books(report, "sales"), _books(report, "purchase")
+    tiles = [("SALES", inr(sold), INK), ("PURCHASES", inr(bought), INK),
              ("RECEIVED", inr(received), GREEN), ("PAID", inr(paid), RED)]
 
     n = sales.get("count") or len(sales.get("vouchers") or [])
-    if n:
-        how = _versus(sales.get("total") or 0, avg("sales"))
+    if n or abs(sold) >= 0.5:
+        how = _versus(sold, avg("sales"))
         lines.append(("good" if "above" in how else "watch" if "below" in how else "info",
-                      f"Sales {inr(sales.get('total'))}",
-                      f" in {n} bill{'s' if n != 1 else ''}" + (f" -- {how}." if how else ".")))
+                      f"Sales {inr(sold)}",
+                      (f" in {n} bill{'s' if n != 1 else ''}" if n else "") + (f" -- {how}." if how else ".")))
     elif day.weekday() != 6:
         lines.append(("watch", "No sales ", "entered today."))
     n = purchase.get("count") or len(purchase.get("vouchers") or [])
-    if n:
-        how = _versus(purchase.get("total") or 0, avg("purchase"))
-        lines.append(("info", f"Purchases {inr(purchase.get('total'))}",
-                      f" in {n} bill{'s' if n != 1 else ''}" + (f" -- {how}." if how else ".")))
+    if n or abs(bought) >= 0.5:
+        how = _versus(bought, avg("purchase"))
+        lines.append(("info", f"Purchases {inr(bought)}",
+                      (f" in {n} bill{'s' if n != 1 else ''}" if n else "") + (f" -- {how}." if how else ".")))
     if received or paid:
         lines.append(("info", f"Received {inr(received)}, paid {inr(paid)}",
                       (". Biggest payments: " + _names(payments, lambda v: f"{v.get('party') or v.get('description') or '(no party)'} {inr(v.get('amount'))}")
@@ -1280,6 +1302,12 @@ def _briefing_month(totals, day):
     expected = [first + datetime.timedelta(days=i) for i in range(day.day)]
     expected = [d for d in expected if d.weekday() != 6]
     missing = [d for d in expected if d.isoformat() not in totals]
+    empty = sorted(d for d, t in totals.items() if first.isoformat() <= d <= day.isoformat() and t.get("no_entries"))
+    if empty:
+        lines.append(("watch", f"{len(empty)} day{'s' if len(empty) != 1 else ''} without their entries",
+                      f" ({', '.join(datetime.date.fromisoformat(d).strftime('%d %b') for d in empty)}): Tally's totals "
+                      "are right, but the bills, payments and receipts of those days are missing on the dashboard "
+                      "until the Tally laptop syncs them again."))
     if missing:
         lines.append(("watch", f"{len(missing)} working day{'s' if len(missing) != 1 else ''} not synced",
                       f" this month ({', '.join(f'{d:%d %b}' for d in missing[:5])}{'...' if len(missing) > 5 else ''}), "
@@ -1375,7 +1403,7 @@ def _briefing_report(data, day, sync_note=""):
                      f'<td style="vertical-align:top;padding:7px 0;font-size:13.5px;line-height:1.45;color:{INK};border-bottom:1px solid {ZEBRA}">'
                      f'<b>{e(lead)}</b>{e(rest)}</td></tr></table>')
     when = _synced_when(data["report"]) if data.get("report") else ""
-    note = ("Sales and purchases are with GST, as in the Daily Sales and Purchase Entries. "
+    note = ("Sales and purchases are before GST: Tally's Sales and Purchase Accounts, as on the dashboard. "
             "Stock, challans, proformas and debtors are as they stand now."
             + (f" Day synced from Tally at {when}." if when else ""))
     body += f'<div style="height:12px"></div>' + _note(note)
