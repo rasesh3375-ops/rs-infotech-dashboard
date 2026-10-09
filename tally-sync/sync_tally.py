@@ -2210,6 +2210,7 @@ def _build_payload(date, vouchers, voucher_type_parents, cash_ledgers, bank_ledg
         payload["cash_vouchers"]["count"],
         payload["bank_vouchers"]["count"],
     )
+    _refuse_empty_day(date, vouchers, payload.get("profit_and_loss"))
     return payload
 
 
@@ -2237,6 +2238,38 @@ def _refuse_unreadable_company(cash_ledgers, bank_ledgers):
         raise TallyError("No Cash-in-Hand and no Bank ledgers at all. " + UNREADABLE_COMPANY_HINT)
 
 
+# On 9 Oct 2026, with Tally's period (Alt+F2) still on an earlier year after
+# the serial-number import (run_import_serials), the 6:30 PM catch-up
+# re-synced 2-8 Oct: the Voucher collection only ever answers with Tally's
+# current period (_fetch_all_voucher_records), so not one October voucher
+# came back, and seven real days -- over Rs.27 lakh of sales -- were written
+# over as empty. The P&L, asked for by date, was right all along, which is
+# what gives such a read away. Both checks raise before anything is written.
+
+def _period_hint(date):
+    fy = _fy_start(date)
+    return (f"Tally's period (Alt+F2) doesn't cover {date:%d %b %Y} -- probably still on an earlier year. "
+            f"In Tally: F3 > {TALLY_COMPANY_NAME}, then Alt+F2 > 1-4-{fy.year} to 31-3-{fy.year + 1}. "
+            "Nothing was written; the days already stored are kept.")
+
+
+def _refuse_wrong_period(all_vouchers, last_date):
+    """Raise when not one voucher Tally gave falls in last_date's financial
+    year up to last_date: Tally is answering for another year."""
+    lo, hi = _fy_start(last_date).isoformat(), last_date.isoformat()
+    if not any(lo <= _tally_date_to_iso(_text(v, "DATE")) <= hi for v in all_vouchers):
+        raise TallyError(_period_hint(last_date))
+
+
+def _refuse_empty_day(date, vouchers, pl):
+    """Raise when Tally's P&L has entries on a day it gave no vouchers for --
+    every posting is a voucher, so the voucher read is the wrong one."""
+    if not vouchers and isinstance(pl, dict) and any(
+            abs(pl.get(k) or 0) >= 0.5 for k in ("total_income", "total_expense", "sales_accounts", "purchase_accounts")):
+        raise TallyError(f"Tally's P&L has entries on {date:%d %b %Y} but no vouchers came back for it. "
+                         + _period_hint(date))
+
+
 def run(date, dry_run=False, dump_raw_dir=None):
     date_iso = date.strftime("%Y-%m-%d")
     log.info("Syncing %s for %s", TALLY_COMPANY_NAME, date_iso)
@@ -2258,6 +2291,7 @@ def run(date, dry_run=False, dump_raw_dir=None):
     all_vouchers = _fetch_all_voucher_records(date, dump_raw_dir)
     if not all_vouchers:
         raise TallyError("No vouchers at all in the whole financial year. " + UNREADABLE_COMPANY_HINT)
+    _refuse_wrong_period(all_vouchers, date)
     wanted = _fmt_date(date)
     vouchers = [v for v in all_vouchers if _text(v, "DATE") == wanted]
     balances = _GroupBalances(dump_raw_dir)
@@ -2321,6 +2355,7 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
         raise TallyError("No vouchers at all in the whole financial year. " + UNREADABLE_COMPANY_HINT)
 
     all_vouchers = [v for day_vouchers in vouchers_by_date.values() for v in day_vouchers]
+    _refuse_wrong_period(all_vouchers, to_date)
     balances = _GroupBalances(dump_raw_dir)
 
     succeeded = 0
@@ -2437,21 +2472,36 @@ CATCH_UP_FROM_HOUR = 11
 # A day Tally can't give (it fails every time) stays behind; this keeps the
 # retry to every few hours instead of every sync. Sync now always retries.
 CATCH_UP_EVERY_HOURS = 3
+# A day stored with no vouchers at all although its books show sales or
+# purchases was written from a wrong read (see _refuse_wrong_period) and is
+# synced again, as far back as this -- further than CATCH_UP_DAYS, so 2-8 Oct
+# 2026 were still in reach when the fix reached the laptop.
+REPAIR_DAYS = 35
+VOUCHER_LISTS = ("sales", "purchase", "proforma", "cash_vouchers", "bank_vouchers")
 
 
 def _days_behind(db, today):
-    """The days of the last CATCH_UP_DAYS before today, oldest first, that
-    aren't in daily_reports or were last synced on the day itself. synced_at
-    is the PC's own clock, India time, as YYYY-MM-DDTHH:MM:SS, so a plain
-    string comparison with the next day's date tells which."""
+    """The days before today, oldest first, to sync again: those of the last
+    CATCH_UP_DAYS that aren't in daily_reports or were last synced on the
+    day itself, and those of the last REPAIR_DAYS stored empty although
+    their books show sales or purchases (_wrongly_empty). synced_at is the
+    PC's own clock, India time, as YYYY-MM-DDTHH:MM:SS, so a plain string
+    comparison with the next day's date tells which."""
     behind = []
-    for n in range(CATCH_UP_DAYS, 0, -1):
+    for n in range(max(CATCH_UP_DAYS, REPAIR_DAYS), 0, -1):
         day = today - datetime.timedelta(days=n)
         snap = db.collection(FIRESTORE_COLLECTION).document(day.isoformat()).get()
-        synced = str(((snap.to_dict() or {}) if snap.exists else {}).get("synced_at") or "")
-        if synced < (day + datetime.timedelta(days=1)).isoformat():
+        doc = (snap.to_dict() or {}) if snap.exists else {}
+        synced = str(doc.get("synced_at") or "")
+        if (n <= CATCH_UP_DAYS and synced < (day + datetime.timedelta(days=1)).isoformat()) or _wrongly_empty(doc):
             behind.append(day)
     return behind
+
+
+def _wrongly_empty(doc):
+    books = doc.get("books") or doc.get("profit_and_loss") or {}
+    return (bool(doc) and not any((doc.get(k) or {}).get("vouchers") for k in VOUCHER_LISTS)
+            and any(abs(books.get(k) or 0) >= 0.5 for k in ("sales_accounts", "purchase_accounts")))
 
 
 def _sync_role():
