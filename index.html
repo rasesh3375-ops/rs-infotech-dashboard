@@ -127,6 +127,51 @@
      numbers, because the only sign of the date was plain text at the far
      end of the bar. */
   .period-now{ display:flex; align-items:center; gap:8px; }
+  /* Search everything (the owner's request, 9 Oct 2026): one box in the
+     period bar -- not a row of its own, which would push the last row of
+     tiles off his laptop screen -- with suggestions under it as he types
+     and the results in a panel above the tiles. */
+  .gsearch{ position:relative; flex:1 1 260px; min-width:200px; max-width:460px; }
+  .gsearch input{
+    width:100%; box-sizing:border-box; font:inherit; font-size:13.5px; padding:6px 10px 6px 30px; border-radius:8px;
+    border:1px solid var(--panel-edge); color:var(--text); outline:none;
+    background:var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='7' cy='7' r='5'/%3E%3Cpath d='m11 11 4 4'/%3E%3C/svg%3E") no-repeat 9px center;
+  }
+  .gsearch input:focus{ border-color:#14539a; box-shadow:0 0 0 3px rgba(20,83,154,0.12); }
+  .gsearch-suggest{ display:none; position:absolute; left:0; right:0; top:calc(100% + 4px); z-index:30; background:var(--panel);
+    border:1px solid var(--panel-edge); border-radius:10px; box-shadow:0 8px 24px rgba(17,17,17,0.14); overflow:hidden; }
+  .gsearch-suggest.open{ display:block; }
+  .gsearch-suggest button{ display:flex; width:100%; justify-content:space-between; gap:10px; padding:8px 12px; border:0; background:none;
+    font:inherit; font-size:13.5px; color:var(--text); text-align:left; cursor:pointer; }
+  .gsearch-suggest button:hover, .gsearch-suggest button.active{ background:rgba(20,83,154,0.07); }
+  .gsearch-suggest small{ color:var(--text-dim); white-space:nowrap; }
+  .gresults{ background:var(--panel); border:1px solid var(--panel-edge); border-radius:14px; padding:12px 16px 14px; margin:0 0 10px;
+    box-shadow:0 1px 3px rgba(17,17,17,0.06); }
+  .gresults[hidden]{ display:none; }
+  .gr-head{ display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:6px; }
+  .gr-title{ font-weight:700; font-size:15px; }
+  .gr-close{ border:1px solid var(--panel-edge); background:var(--bg); border-radius:7px; padding:3px 10px; font:inherit; font-size:13px; cursor:pointer; color:var(--text); }
+  .gr-note{ color:var(--text-dim); font-size:12px; margin:2px 0 8px; }
+  .gr-party{ border:1px solid var(--panel-edge); border-left:4px solid #14539a; border-radius:10px; padding:10px 12px; margin:8px 0; }
+  .gr-party .name{ font-weight:700; font-size:15px; }
+  .gr-party .facts{ display:flex; flex-wrap:wrap; gap:6px 18px; margin-top:6px; font-size:13px; }
+  .gr-party .facts b{ font-family:'JetBrains Mono',monospace; }
+  .gr-group{ margin-top:12px; }
+  .gr-group h4{ margin:0 0 4px; font-size:12px; letter-spacing:.3px; text-transform:uppercase; color:var(--text-dim); display:flex; justify-content:space-between; gap:10px; }
+  .gr-row{ display:flex; gap:10px; align-items:baseline; padding:7px 2px; border-top:1px solid rgba(17,17,17,0.06); cursor:default; }
+  .gr-row.go{ cursor:pointer; }
+  .gr-row.go:hover{ background:rgba(20,83,154,0.04); }
+  .gr-row .when{ flex:0 0 92px; font-size:12px; color:var(--text-dim); white-space:nowrap; }
+  .gr-row .what{ flex:1 1 auto; min-width:0; }
+  .gr-row .what .p{ font-weight:600; }
+  .gr-row .what .d{ font-size:12px; color:var(--text-dim); word-break:break-word; }
+  .gr-row .amt{ flex:0 0 auto; font-family:'JetBrains Mono',monospace; font-weight:700; white-space:nowrap; }
+  .gr-more{ font-size:12px; color:var(--text-dim); padding:6px 2px; }
+  @media (max-width: 640px){
+    .gsearch{ order:-1; flex-basis:100%; max-width:none; }
+    .gr-row{ flex-wrap:wrap; }
+    .gr-row .when{ order:3; flex:0 0 auto; }
+  }
   .period-range{
     font-size:13px; font-weight:700; padding:4px 11px; border-radius:7px;
     background:rgba(20,83,154,0.10); color:var(--blue); border:1px solid rgba(20,83,154,0.30);
@@ -484,11 +529,16 @@
       <button class="pl-period-btn" data-period="yearly">Yearly</button>
       <button class="period-arrow" id="periodNext" title="Next">›</button>
     </div>
+    <div class="gsearch" id="gsearch">
+      <input type="search" id="gsearchInput" placeholder="Search everything: party, invoice no, item, serial no, amount" autocomplete="off" enterkeyhint="search" aria-label="Search everything">
+      <div class="gsearch-suggest" id="gsearchSuggest" role="listbox"></div>
+    </div>
     <div class="period-now">
       <div class="period-range" id="periodRange"></div>
       <button class="back-today" id="backToToday">Back to today</button>
     </div>
   </div>
+  <div class="gresults" id="gresults" hidden></div>
 
   <div class="dash-grid">
     <div class="card expandable" id="salesCard">
@@ -1318,6 +1368,229 @@ async function searchSerials(){
       (since ? ` Bills are searched from ${escapeHtml(since)}; anything bought before that isn't in the dashboard.` : '') + '</td></tr>';
 }
 document.getElementById('serialInput').addEventListener('input', searchSerials);
+
+// ---------------------------------------------------------------------
+// Search everything
+// ---------------------------------------------------------------------
+// One box for the whole year's Tally data (the owner's request, 9 Oct
+// 2026): a party, an invoice or bill number, an item, a serial number or
+// an amount. As he types, party and item names are suggested; the results
+// come grouped -- the party's position first (what they owe, what was sold
+// to them, when they last paid), then every pending bill, sale, purchase,
+// receipt, payment, challan, proforma, stock item and serial line that
+// matches. Every word typed has to be in a line for it to match, and
+// commas and the rupee sign are ignored, so "59000" finds Rs.59,000.
+//
+// The year's days are read once (one document a day, the same reads the
+// Yearly view makes) and kept for ten minutes; the pending lists, balances
+// and stock are already on the page.
+const GS_KEEP_MS = 10 * 60 * 1000;
+let gsYear = null, gsYearAt = 0, gsYearLoading = null, gsToken = 0, gsTimer = null, gsActive = -1;
+const gsNorm = (t) => String(t == null ? '' : t).toLowerCase().replace(/[,₹]/g, '').replace(/\s+/g, ' ');
+const gsWords = (q) => gsNorm(q).trim().split(' ').filter(Boolean);
+const gsHit = (words, text) => words.every(w => text.includes(w));
+const gsAmt = (n) => (n == null ? '' : String(Math.round(Math.abs(n))));
+// escapeHtml leaves quotes alone, so attribute values get their own.
+const gsAttr = (t) => String(t).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;');
+
+function gsLoadYear(){
+  if (gsYear && Date.now() - gsYearAt < GS_KEEP_MS) return Promise.resolve(gsYear);
+  if (gsYearLoading) return gsYearLoading;
+  const today = todayISO();
+  const [fyStart] = periodBoundsIso('yearly', today);
+  const dates = [];
+  for (let d = fyStart; d <= today; d = addDaysIso(d, 1)) dates.push(d);
+  gsYearLoading = Promise.all(dates.map(d => db.collection(COLLECTION).doc(d).get())).then(snaps => {
+    const rows = [];
+    let synced = 0;
+    snaps.forEach((snap, i) => {
+      if (!snap.exists) return;
+      synced++;
+      const day = withProformaApart(snap.data()), date = dates[i];
+      for (const [key, kind] of [['sales', 'sale'], ['purchase', 'purchase']]){
+        ((day[key] || {}).vouchers || []).forEach(v => rows.push({ ...v, kind, date }));
+      }
+      for (const key of ['cash_vouchers', 'bank_vouchers']){
+        ((day[key] || {}).vouchers || []).forEach(v => rows.push({ ...v, date,
+          kind: (v.direction === 'cash_in' || v.direction === 'bank_in') ? 'in' : 'out',
+          via: key === 'cash_vouchers' ? 'Cash' : (v.ledger || 'Bank') }));
+      }
+    });
+    rows.forEach(r => { r._t = gsNorm([r.party, r.description, r.type, r.voucher_no, r.ledger, r.date, isoToShort(r.date), gsAmt(r.amount)].join(' ')); });
+    gsYear = { rows, from: fyStart, to: today, days: dates.length, synced };
+    gsYearAt = Date.now();
+    return gsYear;
+  }).finally(() => { gsYearLoading = null; });
+  return gsYearLoading;
+}
+
+// Names to suggest: every party on the Debtors/Creditors tiles or on a bill
+// this year, and every stock item.
+function gsNames(){
+  const names = new Map();
+  const add = (name, label) => { if (name && !names.has(name.toLowerCase())) names.set(name.toLowerCase(), { name, label }); };
+  ((shownParties.debtors || {}).parties || []).forEach(r => add(r.name, 'Customer'));
+  ((shownParties.creditors || {}).parties || []).forEach(r => add(r.name, 'Supplier'));
+  ((gsYear && gsYear.rows) || []).forEach(r => add(r.party, 'Party'));
+  ((shownStock && shownStock.items) || []).forEach(r => add(r.name, 'Stock item'));
+  return [...names.values()];
+}
+
+function gsSuggest(){
+  const box = document.getElementById('gsearchSuggest');
+  const q = gsNorm(document.getElementById('gsearchInput').value).trim();
+  gsActive = -1;
+  if (q.length < 2){ box.classList.remove('open'); box.innerHTML = ''; return; }
+  const words = q.split(' ');
+  const hits = gsNames().filter(n => gsHit(words, gsNorm(n.name)))
+    .sort((a, b) => (gsNorm(b.name).startsWith(q) - gsNorm(a.name).startsWith(q)) || a.name.localeCompare(b.name))
+    .slice(0, 8);
+  box.innerHTML = hits.map(n => `<button type="button" data-name="${gsAttr(n.name)}"><span>${escapeHtml(n.name)}</span><small>${escapeHtml(n.label)}</small></button>`).join('');
+  box.classList.toggle('open', hits.length > 0);
+}
+
+// Opens that day on the dashboard with the tile it belongs to unfolded and
+// its own search box filled in with the voucher number.
+function gsGoTo(date, cardId, panelId, ref){
+  currentPeriod = 'daily';
+  currentAnchorDateIso = date;
+  loadView();
+  const card = document.getElementById(cardId), panel = document.getElementById(panelId);
+  panel.classList.add('open'); card.classList.add('open');
+  const box = panel.querySelector('.tile-search input');
+  if (box && ref){ box.value = ref; box.dispatchEvent(new Event('input')); }
+  card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function gsRow(when, party, desc, amt, go){
+  const goAttr = go ? ` class="gr-row go" data-go="${gsAttr(JSON.stringify(go))}" title="Open this day"` : ' class="gr-row"';
+  return `<div${goAttr}><div class="when">${when}</div><div class="what"><div class="p">${escapeHtml(party || '(no party)')}</div>` +
+         (desc ? `<div class="d">${desc}</div>` : '') + `</div><div class="amt">${amt}</div></div>`;
+}
+
+function gsGroup(title, rows, render, total, limit = 30){
+  if (!rows.length) return '';
+  return `<div class="gr-group"><h4><span>${escapeHtml(title)} (${rows.length})</span>${total != null ? `<span>${escapeHtml(fmtINR(total))}</span>` : ''}</h4>` +
+         rows.slice(0, limit).map(render).join('') +
+         (rows.length > limit ? `<div class="gr-more">and ${rows.length - limit} more – type more to narrow it down</div>` : '') + '</div>';
+}
+
+async function gsRun(){
+  const input = document.getElementById('gsearchInput'), panel = document.getElementById('gresults');
+  const raw = input.value.trim(), words = gsWords(raw);
+  const token = ++gsToken;
+  if (!words.length || gsNorm(raw).replace(/ /g, '').length < 2){ panel.hidden = true; panel.innerHTML = ''; return; }
+  panel.hidden = false;
+  if (!gsYear) panel.innerHTML = `<div class="gr-head"><div class="gr-title">Searching “${escapeHtml(raw)}”…</div></div><div class="gr-note">Reading this year's days from Tally's figures, once – a few seconds.</div>`;
+  let year;
+  try { year = await gsLoadYear(); }
+  catch (e){ console.error(e); if (token === gsToken) panel.innerHTML = '<div class="gr-note">Could not search – check your internet connection.</div>'; return; }
+  let serials = [];
+  try { if (serialIndex && Object.keys(serialIndex.months || {}).length) serials = await loadSerialLines(); } catch (e){ console.error(e); }
+  if (token !== gsToken) return;
+
+  const short = (iso) => escapeHtml(iso ? isoToShort(iso) : '');
+  const sum = (rows) => rows.reduce((t, r) => t + (r.amount || 0), 0);
+  const v = year.rows.filter(r => gsHit(words, r._t));
+  const newest = (a, b) => (b.date || '').localeCompare(a.date || '');
+  const sales = v.filter(r => r.kind === 'sale').sort(newest);
+  const buys = v.filter(r => r.kind === 'purchase').sort(newest);
+  const ins = v.filter(r => r.kind === 'in').sort(newest);
+  const outs = v.filter(r => r.kind === 'out').sort(newest);
+
+  const debtors = (shownParties.debtors || {}).parties || [], creditors = (shownParties.creditors || {}).parties || [];
+  const bills = [];
+  debtors.forEach(p => (p.bills_list || []).forEach(b => bills.push({ ...b, party: b.party || p.name })));
+  const billHits = bills.filter(b => gsHit(words, gsNorm([b.party, b.ref, b.description, b.date, isoToShort(b.date), gsAmt(b.amount)].join(' '))))
+    .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  const challans = (shownChallans || []).filter(r => gsHit(words, gsNorm([r.party, r.description, r.voucher_no, r.date].join(' '))));
+  const proformas = (shownProformas || []).filter(r => gsHit(words, gsNorm([r.party, r.description, r.voucher_no, r.date, gsAmt(r.amount)].join(' '))));
+  const stock = ((shownStock && shownStock.items) || []).filter(r => gsHit(words, gsNorm([r.name, r.group, r.qty_text, gsAmt(r.value)].join(' '))));
+  const serialHits = serials.filter(r => gsHit(words, gsNorm([r.text, r.item, r.party, r.voucher_no].join(' ')))).slice().reverse();
+
+  // The party's own position, for every party whose name matches.
+  const partyNames = new Map();
+  [...debtors.map(p => p.name), ...creditors.map(p => p.name), ...year.rows.map(r => r.party)]
+    .forEach(n => { if (n && gsHit(words, gsNorm(n))) partyNames.set(n.toLowerCase(), n); });
+  const parties = [...partyNames.values()].slice(0, 4).map(name => {
+    const low = name.toLowerCase(), mine = year.rows.filter(r => (r.party || '').toLowerCase() === low);
+    const d = debtors.find(p => (p.name || '').toLowerCase() === low), c = creditors.find(p => (p.name || '').toLowerCase() === low);
+    const last = (rows) => rows.reduce((m, r) => (!m || r.date > m.date ? r : m), null);
+    const facts = [];
+    if (d && Math.abs(d.amount || 0) >= 0.5) facts.push(`${d.amount > 0 ? 'Owes you' : 'Advance with you'} <b>${escapeHtml(fmtINR(Math.abs(d.amount)))}</b>` +
+      (d.days != null ? ` · oldest bill <b style="color:${d.days >= PARTY_OVERDUE_DAYS ? 'var(--red)' : 'inherit'}">${d.days} days</b> · ${d.bills || 0} bill${d.bills === 1 ? '' : 's'}` : ''));
+    if (c && Math.abs(c.amount || 0) >= 0.5) facts.push(`You owe <b>${escapeHtml(fmtINR(Math.abs(c.amount)))}</b>` + (c.days != null ? ` · oldest bill ${c.days} days` : ''));
+    const s = mine.filter(r => r.kind === 'sale'), b = mine.filter(r => r.kind === 'purchase');
+    const i = mine.filter(r => r.kind === 'in'), o = mine.filter(r => r.kind === 'out');
+    if (s.length) facts.push(`Sold this year <b>${escapeHtml(fmtINR(sum(s)))}</b> (${s.length})`);
+    if (b.length) facts.push(`Bought this year <b>${escapeHtml(fmtINR(sum(b)))}</b> (${b.length})`);
+    if (i.length){ const l = last(i); facts.push(`Received <b>${escapeHtml(fmtINR(sum(i)))}</b> · last ${short(l.date)} (${escapeHtml(fmtINR(l.amount))})`); }
+    if (o.length){ const l = last(o); facts.push(`Paid <b>${escapeHtml(fmtINR(sum(o)))}</b> · last ${short(l.date)} (${escapeHtml(fmtINR(l.amount))})`); }
+    return facts.length ? `<div class="gr-party"><div class="name">${escapeHtml(name)}</div><div class="facts">${facts.map(f => `<span>${f}</span>`).join('')}</div></div>` : '';
+  }).join('');
+
+  const desc = (r) => escapeHtml([r.description, [r.type, r.voucher_no].filter(Boolean).join(' ')].filter(Boolean).join(' · '));
+  const goSale = (card, panelId) => (r) => gsRow(short(r.date), r.party, desc(r), escapeHtml(fmtINR(r.amount)),
+    { date: r.date, card, panel: panelId, ref: r.voucher_no || '' });
+  const html = parties +
+    gsGroup('Pending bills – customers owe you', billHits, b => gsRow(short(b.date) + `<div>${b.date ? Math.round((new Date(todayISO() + 'T00:00:00') - new Date(b.date + 'T00:00:00')) / 86400000) + ' days' : ''}</div>`,
+      b.party, escapeHtml([b.description, b.ref ? 'Bill ' + b.ref : ''].filter(Boolean).join(' · ')), escapeHtml(fmtINR(b.amount))), sum(billHits)) +
+    gsGroup('Sales invoices', sales, goSale('salesCard', 'salesDetail'), sum(sales)) +
+    gsGroup('Purchases', buys, goSale('purchaseCard', 'purchaseDetail'), sum(buys)) +
+    gsGroup('Money received', ins, r => gsRow(short(r.date), r.party, escapeHtml([r.via, r.description, r.voucher_no].filter(Boolean).join(' · ')), escapeHtml(fmtINR(r.amount)),
+      { date: r.date, card: r.via === 'Cash' ? 'cashCard' : 'bankCard', panel: r.via === 'Cash' ? 'cashDetail' : 'bankDetail', ref: r.voucher_no || '' }), sum(ins)) +
+    gsGroup('Money paid', outs, r => gsRow(short(r.date), r.party, escapeHtml([r.via, r.description, r.voucher_no].filter(Boolean).join(' · ')), escapeHtml(fmtINR(r.amount)),
+      { date: r.date, card: r.via === 'Cash' ? 'cashCard' : 'bankCard', panel: r.via === 'Cash' ? 'cashDetail' : 'bankDetail', ref: r.voucher_no || '' }), sum(outs)) +
+    gsGroup('Pending delivery challans', challans, r => gsRow(short(r.date), r.party, escapeHtml([r.description, r.voucher_no].filter(Boolean).join(' · ')), '')) +
+    gsGroup('Pending proforma invoices', proformas, r => gsRow(short(r.date), r.party, escapeHtml([r.description, r.voucher_no].filter(Boolean).join(' · ')), escapeHtml(fmtINR(r.amount))), sum(proformas)) +
+    gsGroup('Stock', stock, r => gsRow('', r.name, escapeHtml([r.group, r.qty_text].filter(Boolean).join(' · ')), escapeHtml(fmtINR(r.value)))) +
+    gsGroup('Serial numbers', serialHits, r => gsRow(short(r.date), r.party, escapeHtml([serialKind(r)[0], r.item, r.text, [r.type, r.voucher_no].join(' ')].filter(Boolean).join(' · ')), ''));
+  const missing = year.days - year.synced;
+  panel.innerHTML = `<div class="gr-head"><div class="gr-title">Results for “${escapeHtml(raw)}”</div><button type="button" class="gr-close" id="gsClose">✕ Close</button></div>` +
+    `<div class="gr-note">Searched ${escapeHtml(isoToShort(year.from))} to today${missing ? ` (${missing} day${missing === 1 ? '' : 's'} not synced)` : ''}, the pending lists, balances, stock and serial numbers. Tap a dated line to open that day.</div>` +
+    (html || `<div class="gr-note" style="font-size:13px">Nothing matches “${escapeHtml(raw)}”.</div>`);
+}
+
+(function wireGlobalSearch(){
+  const input = document.getElementById('gsearchInput'), box = document.getElementById('gsearchSuggest');
+  const panel = document.getElementById('gresults');
+  const close = () => { input.value = ''; box.classList.remove('open'); panel.hidden = true; panel.innerHTML = ''; };
+  input.addEventListener('focus', () => { gsLoadYear().catch(() => {}); });     // start reading while he types
+  input.addEventListener('input', () => {
+    gsSuggest();
+    clearTimeout(gsTimer);
+    gsTimer = setTimeout(gsRun, 300);
+  });
+  input.addEventListener('keydown', (e) => {
+    const items = [...box.querySelectorAll('button')];
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+      if (!items.length) return;
+      e.preventDefault();
+      gsActive = (gsActive + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+      items.forEach((b, i) => b.classList.toggle('active', i === gsActive));
+    } else if (e.key === 'Enter'){
+      if (gsActive >= 0 && items[gsActive]) input.value = items[gsActive].dataset.name;
+      box.classList.remove('open');
+      clearTimeout(gsTimer); gsRun();
+    } else if (e.key === 'Escape'){
+      close();
+    }
+  });
+  box.addEventListener('mousedown', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    e.preventDefault();
+    input.value = b.dataset.name;
+    box.classList.remove('open');
+    clearTimeout(gsTimer); gsRun();
+  });
+  input.addEventListener('blur', () => setTimeout(() => box.classList.remove('open'), 150));
+  panel.addEventListener('click', (e) => {
+    if (e.target.closest('#gsClose')){ close(); return; }
+    const row = e.target.closest('.gr-row.go');
+    if (row){ const g = JSON.parse(row.dataset.go); gsGoTo(g.date, g.card, g.panel, g.ref); }
+  });
+})();
 
 let shownProformas = [];
 function renderProformaTable(rows){
