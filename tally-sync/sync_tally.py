@@ -51,6 +51,7 @@ import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
+from xml.sax.saxutils import escape
 
 import requests
 
@@ -331,7 +332,7 @@ def _fmt_date(d):
     return d.strftime("%Y%m%d")
 
 
-def _collection_request(collection_name, obj_type, fetch_fields, from_date, to_date, formulae=None):
+def _collection_request(collection_name, obj_type, fetch_fields, from_date, to_date, formulae=None, company=None):
     """Builds a TDL Collection export request. This is the reliable, structured
     way to pull voucher/ledger/stock-item data out of Tally -- Tally computes
     the collection from its own object model, rather than us scraping a
@@ -374,7 +375,7 @@ def _collection_request(collection_name, obj_type, fetch_fields, from_date, to_d
  <BODY>
   <DESC>
    <STATICVARIABLES>
-    <SVCURRENTCOMPANY>{TALLY_COMPANY_NAME}</SVCURRENTCOMPANY>
+    <SVCURRENTCOMPANY>{escape(company or TALLY_COMPANY_NAME)}</SVCURRENTCOMPANY>
     <SVFROMDATE>{_fmt_date(from_date)}</SVFROMDATE>
     <SVTODATE>{_fmt_date(to_date)}</SVTODATE>
     <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
@@ -845,7 +846,8 @@ def push_serial_index(vouchers, type_parents):
             else:
                 months.pop(month, None)
             y, m = (y + 1, 1) if m == 12 else (y, m + 1)
-        col.document(SERIALS_DOC).set({"months": months, "as_of": _utc_now().isoformat(),
+        col.document(SERIALS_DOC).set({**(((before.to_dict() or {}) if before.exists else {})),
+                                       "months": months, "as_of": _utc_now().isoformat(),
                                        "from": min(months) if months else None,
                                        "descriptions": "read" if (how or by_month) else "not given by Tally"})
         written = sum(len(v) for v in by_month.values())
@@ -854,6 +856,95 @@ def push_serial_index(vouchers, type_parents):
     except Exception as e:
         log.warning("Serial No. Search not updated: %s", e)
         return None
+
+
+def _old_year_companies():
+    """[(name, first day, last day)] of the earlier years' companies open in
+    Tally right now. This company keeps each financial year as a company of
+    its own -- "R. S. Infotech (2025-2026)", "R. S. Infotech(2023-2024)" --
+    and Tally only answers for a company that is open, so this asks which
+    are, keeps those named R. S. Infotech with a year in brackets (not the
+    Capital or Payroll ones), and reads the year off the name."""
+    today = datetime.date.today()
+    root = _post_xml(_collection_request("OpenCompanies", "Company", ["NAME"], today, today),
+                     dump_name="open companies", timeout=30, max_attempts=1)
+    out = []
+    for cmp in _collection_records(root, "COMPANY"):
+        name = (cmp.get("NAME") or _text(cmp, "NAME") or "").strip()
+        letters = re.sub(r"[^a-z]", "", name.lower())
+        m = re.search(r"\((\d{4})\s*-\s*(\d{4})\)\s*$", name)
+        if not m or not letters.startswith("rsinfotech") or "capital" in letters or "payroll" in letters:
+            continue
+        start = datetime.date(int(m.group(1)), 4, 1)
+        out.append((name, start, datetime.date(start.year + 1, 3, 31)))
+    return sorted(out, key=lambda c: c[1])
+
+
+def run_import_serials():
+    """--import-serials: reads the serial numbers off the bills of the
+    earlier years' companies (_old_year_companies) into the Serial No.
+    Search, once -- asked for on 9 Oct 2026, to search three years back.
+    Those years don't change, so this isn't part of the daily sync: open
+    the old companies in Tally (F3, Select Company, alongside R. S.
+    Infotech), run this, and close them again.
+
+    Each company is asked for its vouchers with the item descriptions
+    (SERIAL_FETCH_FIELDS's remembered form), and only if every voucher it
+    sends is dated inside that company's own year are its serial lines
+    written -- a reply from the wrong company is refused, not stored. The
+    months are written like the daily sync writes the current year's, and
+    the current year's months are never touched."""
+    field = _serial_fetch_field()
+    if not field:
+        field, _ = _probe_serial_fetch()
+    if not field:
+        print("Tally doesn't send the item descriptions (where the serial numbers are) -- nothing imported.")
+        return 1
+    companies = _old_year_companies()
+    if not companies:
+        print("No earlier year's company is open in Tally. Open them first: F3 (Select Company), pick\n"
+              "R. S. Infotech (2025-2026), then F3 again for (2024-2025) and (2023-2024), and run this again.")
+        return 1
+    type_parents = fetch_voucher_type_parents(datetime.date.today())
+    db = _firestore_db()
+    col = db.collection(PERIOD_COLLECTION)
+    before = col.document(SERIALS_DOC).get()
+    index = (before.to_dict() or {}) if before.exists else {}
+    months = dict(index.get("months") or {})
+    imported = dict(index.get("imported") or {})
+    current_from = min((m for m in months), default="9999-99")
+    total = 0
+    for name, start, end in companies:
+        try:
+            root = _post_xml(_collection_request("VchList", "Voucher", VOUCHER_FETCH_FIELDS + [field], start, start,
+                                                 company=name),
+                             dump_name=f"vouchers of {name}", timeout=300, max_attempts=1)
+        except TallyError as e:
+            print(f"{name}: Tally didn't answer -- {e}")
+            continue
+        vouchers = _collection_records(root, "VOUCHER")
+        dates = [_tally_date_to_iso(_text(v, "DATE")) for v in vouchers]
+        outside = [d for d in dates if not (start.isoformat() <= d <= end.isoformat())]
+        if not vouchers or outside:
+            print(f"{name}: skipped -- Tally sent {len(vouchers)} vouchers, {len(outside)} of them outside "
+                  f"{start:%d %b %Y} to {end:%d %b %Y}.")
+            continue
+        by_month = _serial_lines(vouchers, type_parents)
+        count = 0
+        for month, lines in sorted(by_month.items()):
+            if month >= current_from and month in months and month not in imported.get(name, {}).get("months", []):
+                continue   # a month the daily sync keeps -- never overwritten from here
+            col.document(SERIALS_MONTH_PREFIX + month).set({"month": month, "lines": lines, "company": name})
+            months[month] = len(lines)
+            count += len(lines)
+        imported[name] = {"from": start.isoformat(), "to": end.isoformat(), "lines": count,
+                          "months": sorted(by_month), "at": _utc_now().isoformat()}
+        total += count
+        print(f"{name}: {len(vouchers)} vouchers, {count} item lines with a serial number imported.")
+    col.document(SERIALS_DOC).set({**index, "months": months, "imported": imported,
+                                   "from": min(months) if months else None, "as_of": _utc_now().isoformat()})
+    print(f"Done: {total} item lines from {len(companies)} earlier year(s). You can close those companies in Tally now.")
+    return 0
 
 
 def _filter_by_class(vouchers, type_parents, wanted_parent, proforma=False):
@@ -2811,6 +2902,8 @@ def main():
                         help="Print Tally's Bills Receivable and Bills Payable as at today, write nothing")
     parser.add_argument("--if-leader", action="store_true",
                         help="Skip (exit code 3) when this is the backup PC and the main sync PC is active")
+    parser.add_argument("--import-serials", action="store_true",
+                        help="Once: read the serial numbers of the earlier years' companies open in Tally into the Serial No. Search")
     parser.add_argument("--listen", action="store_true",
                         help="Keep running: sync today when the dashboard's Sync now button is pressed, and hourly")
     args = parser.parse_args()
@@ -2838,6 +2931,14 @@ def main():
 
     if args.check:
         sys.exit(run_check())
+
+    if args.import_serials:
+        try:
+            with _exclusive_lock("sync.lock", 40 * 60):
+                sys.exit(run_import_serials())
+        except TallyError as e:
+            log.error("Tally error: %s", e)
+            sys.exit(1)
 
     if args.test_group:
         try:
