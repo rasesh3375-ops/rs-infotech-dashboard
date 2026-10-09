@@ -101,6 +101,17 @@ PARTY_BALANCES_DOC = "sundry_balances"
 # latest read, as one document -- see _sync_stock for how carefully that's
 # done.
 STOCK_DOC = "stock_summary"
+
+# Serial numbers, for the dashboard's Serial No. Search: every stock line on
+# a bill whose item has a description typed under it in Tally -- which is
+# where this company's accounts staff type the serial number (the owner, on
+# 9 Oct 2026). One document per month, "serials_2026-04" and so on, plus
+# SERIALS_DOC listing the months, so the dashboard loads a dozen small
+# documents rather than one that would outgrow Firestore's 1 MB limit in a
+# few years. In PERIOD_COLLECTION for the same reason as the Proforma list.
+SERIALS_DOC = "serials_index"
+SERIALS_MONTH_PREFIX = "serials_"
+SERIAL_TEXT_MAX = 600
 STOCK_MIN_HOURS = 3
 # Off from 5 Oct 2026 while Tally kept hanging, when the stock came from a
 # StockItem collection with every item's closing value -- the same kind of
@@ -682,6 +693,82 @@ def _pending_proforma_records(vouchers):
         })
     records.sort(key=lambda r: (r["date"], r["voucher_no"]))
     return records
+
+
+def _serial_lines(vouchers, type_parents):
+    """Every stock line on a real bill (not a proforma, an optional or a
+    cancelled voucher) with text typed under the item in Tally -- the item
+    description lines, where the serial number goes here -- or a batch name
+    of its own, which is where some companies keep serials instead. Grouped
+    by month: {"2026-04": [line, ...]}. A line has the voucher's date,
+    number, type, base type (purchase, sales, credit note, delivery note,
+    ...) and party, the item, its quantity and the text."""
+    out = {}
+    for v in vouchers:
+        if _text(v, "ISOPTIONAL").lower() == "yes" or _text(v, "ISCANCELLED").lower() == "yes":
+            continue
+        vch_type = _text(v, "VOUCHERTYPENAME")
+        if _is_proforma(vch_type):
+            continue
+        date_iso = _tally_date_to_iso(_text(v, "DATE"))
+        if len(date_iso) != 10:
+            continue
+        for inv in v.findall(".//ALLINVENTORYENTRIES.LIST"):
+            texts = [t.text.strip() for t in inv.iter("BASICUSERDESCRIPTION") if t.text and t.text.strip()]
+            batches = [b for b in (_text(x, "BATCHNAME") for x in inv.findall("BATCHALLOCATIONS.LIST"))
+                       if b and b.lower() not in ("primary batch", "any", "not applicable", "end of list")]
+            text = " | ".join(dict.fromkeys(texts + batches))
+            if not text:
+                continue
+            out.setdefault(date_iso[:7], []).append({
+                "date": date_iso,
+                "voucher_no": _text(v, "VOUCHERNUMBER"),
+                "type": vch_type,
+                "base": type_parents.get(vch_type.strip().lower(), ""),
+                "party": _text(v, "PARTYLEDGERNAME"),
+                "item": (inv.get("NAME") or _text(inv, "STOCKITEMNAME") or "").strip(),
+                "qty": _text(inv, "ACTUALQTY") or _text(inv, "BILLEDQTY"),
+                "text": text[:SERIAL_TEXT_MAX],
+            })
+    for lines in out.values():
+        lines.sort(key=lambda r: (r["date"], r["voucher_no"]))
+    return out
+
+
+def push_serial_index(vouchers, type_parents):
+    """Writes the Serial No. Search's documents (see SERIALS_DOC): each
+    month this fetch covers is replaced whole -- an empty month too, so a
+    line taken off a bill in Tally goes from the search -- and months before
+    it are left as they are. Tally hands back only the current financial
+    year, so from 1 April last year's months stay searchable instead of
+    disappearing. Never stops the sync; returns how many lines were
+    written, or None if they couldn't be."""
+    try:
+        by_month = _serial_lines(vouchers, type_parents)
+        first = _earliest_voucher_date(vouchers)[:7]
+        last = max([datetime.date.today().isoformat()[:7]] + list(by_month))
+        db = _firestore_db()
+        col = db.collection(PERIOD_COLLECTION)
+        before = col.document(SERIALS_DOC).get()
+        months = dict(((before.to_dict() or {}).get("months") or {}) if before.exists else {})
+        y, m = int(first[:4]), int(first[5:7])
+        while f"{y:04d}-{m:02d}" <= last:
+            month = f"{y:04d}-{m:02d}"
+            lines = by_month.get(month, [])
+            col.document(SERIALS_MONTH_PREFIX + month).set({"month": month, "lines": lines})
+            if lines:
+                months[month] = len(lines)
+            else:
+                months.pop(month, None)
+            y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+        col.document(SERIALS_DOC).set({"months": months, "as_of": _utc_now().isoformat(),
+                                       "from": min(months) if months else None})
+        written = sum(len(v) for v in by_month.values())
+        log.info("Serial No. Search: %d item lines with a description, %d months in all", written, len(months))
+        return written
+    except Exception as e:
+        log.warning("Serial No. Search not updated: %s", e)
+        return None
 
 
 def _filter_by_class(vouchers, type_parents, wanted_parent, proforma=False):
@@ -1920,6 +2007,7 @@ def run(date, dry_run=False, dump_raw_dir=None):
     push_to_firestore(date_iso, payload)
     removed = push_delivery_challans_to_firestore(delivery_challans, _earliest_voucher_date(all_vouchers))
     listed = push_pending_proformas(proformas, _earliest_voucher_date(all_vouchers))
+    push_serial_index(all_vouchers, voucher_type_parents)
     log.info("Written to Firestore: %s/%s (+%d delivery challans upserted, %d no longer in Tally removed; "
               "%d pending proforma invoices)",
               FIRESTORE_COLLECTION, date_iso, len(delivery_challans), removed, listed)
@@ -1992,6 +2080,7 @@ def run_backfill(from_date, to_date, dry_run=False, dump_raw_dir=None):
     if not dry_run:
         removed = push_delivery_challans_to_firestore(delivery_challans, _earliest_voucher_date(all_vouchers))
         listed = push_pending_proformas(proformas, _earliest_voucher_date(all_vouchers))
+        push_serial_index(all_vouchers, voucher_type_parents)
 
     log.info("Backfill done: %d/%d days written%s. %d delivery challans upserted, %d no longer in Tally removed. "
               "%d pending proforma invoices.",

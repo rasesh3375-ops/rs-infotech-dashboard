@@ -102,6 +102,13 @@
   .tile-search-count{ font-size:12px; color:var(--text-dim); white-space:nowrap; }
   .tile-search-none{ display:none; padding:12px 4px; font-size:13px; color:var(--text-dim); }
   table.datatable tr[hidden]{ display:none !important; }
+  /* Serial No. Search: what happened to the unit, as a coloured word. */
+  .serial-kind{ display:inline-block; font-size:11px; font-weight:700; letter-spacing:.3px; text-transform:uppercase;
+    padding:1px 6px; border-radius:4px; margin-right:6px; background:var(--ring-track); color:var(--text); }
+  .serial-kind.in{ background:rgba(22,122,81,0.12); color:#167a51; }
+  .serial-kind.out{ background:rgba(20,83,154,0.12); color:#14539a; }
+  .serial-kind.back{ background:rgba(211,26,20,0.10); color:var(--red); }
+  .serial-text{ color:var(--text-dim); font-size:12.5px; margin-top:2px; word-break:break-word; }
 
   .period-bar{
     display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
@@ -346,7 +353,8 @@
        grid keeps the page's order. */
     #salesCard{ order:1; } #purchaseCard{ order:2; } #cashCard{ order:3; } #bankCard{ order:4; }
     #stockCard{ order:5; } #debtorsCard{ order:6; } #creditorsCard{ order:7; }
-    #challanCard{ order:8; } #proformaCard{ order:9; } .dash-grid .pl-card{ order:10; }
+    #challanCard{ order:8; } #proformaCard{ order:9; } #serialCard{ order:10; } .dash-grid .pl-card{ order:11; }
+    #serialTable td:nth-child(1){ order:4; font-size:11px; color:var(--text-dim); }
     .card{
       display:grid; grid-template-columns:minmax(0, 1fr) auto; column-gap:10px; align-items:center;
       border:0; border-radius:0; box-shadow:none; border-top:1px solid rgba(17,17,17,0.08); padding:11px 14px;
@@ -608,6 +616,23 @@
         <table class="datatable">
           <thead><tr><th>Date</th><th>Party</th><th>Description</th><th>Voucher No</th><th class="num-col">Amount</th></tr></thead>
           <tbody id="proformaBody"><tr><td colspan="5" class="empty-note">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card expandable" id="serialCard">
+      <div class="kicker">Serial No. Search</div>
+      <div class="stat-count" id="serialTotal">–</div>
+      <div class="stat-sub" id="serialCount">Loading…</div>
+      <div class="tap-hint">Tap to search a serial number</div>
+      <div class="voucher-detail-panel tall" id="serialDetail">
+        <div class="tile-search">
+          <input type="search" id="serialInput" placeholder="Type a serial number" autocomplete="off" autocapitalize="characters" enterkeyhint="search" aria-label="Serial number">
+          <span class="tile-search-count" id="serialMatches"></span>
+        </div>
+        <table class="datatable" id="serialTable">
+          <thead><tr><th>Date</th><th>Bought / sold</th><th>Item and serial number</th><th>Bill</th></tr></thead>
+          <tbody id="serialBody"><tr><td colspan="4" class="empty-note">Type at least 3 characters of a serial number.</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -1194,6 +1219,105 @@ function attachStockListener(){
   );
 }
 
+// ---------------------------------------------------------------------
+// Serial No. Search
+// ---------------------------------------------------------------------
+// The owner asked on 9 Oct 2026 to type a serial number and get the
+// product and the date it was bought. His staff type serials under the
+// item line on the bill in Tally; the sync collects every such line
+// (sync_tally.py, push_serial_index) into one document a month, listed in
+// serials_index. Those are read once, when the tile is first searched, and
+// again only after a sync has changed them. Each match is a bill: bought
+// from a supplier, sold to a customer, returned, delivered on a challan --
+// oldest first, so a unit's history reads top to bottom.
+const SERIALS_DOC = 'serials_index';
+let serialIndex = null, serialLines = null, serialLoading = null, serialUnsubscribe = null;
+function detachSerialListener(){
+  if (serialUnsubscribe){ serialUnsubscribe(); serialUnsubscribe = null; }
+}
+function attachSerialListener(){
+  detachSerialListener();
+  serialUnsubscribe = db.collection(PERIOD_COLLECTION).doc(SERIALS_DOC).onSnapshot((doc) => {
+    const d = doc.exists ? doc.data() : null;
+    if (!serialIndex || !d || d.as_of !== serialIndex.as_of) serialLines = null;   // reload on next search
+    serialIndex = d;
+    const months = Object.keys((d && d.months) || {}).sort();
+    const count = months.reduce((t, m) => t + d.months[m], 0);
+    document.getElementById('serialTotal').textContent = d ? count.toLocaleString('en-IN') : '–';
+    document.getElementById('serialCount').textContent = !d ? 'Not synced from Tally yet'
+      : count ? 'item lines with a serial · bills since ' + isoToShort(months[0] + '-01')
+      : 'No serial numbers found on bills in Tally';
+    if (serialLines === null && document.getElementById('serialInput').value.trim()) searchSerials();
+  }, (error) => {
+    console.error(error);
+    document.getElementById('serialCount').textContent = 'Could not load -- check your internet connection.';
+  });
+}
+function loadSerialLines(){
+  if (serialLines) return Promise.resolve(serialLines);
+  if (serialLoading) return serialLoading;
+  const months = Object.keys((serialIndex && serialIndex.months) || {}).sort();
+  serialLoading = Promise.all(months.map(m => db.collection(PERIOD_COLLECTION).doc('serials_' + m).get()))
+    .then(snaps => {
+      serialLines = [];
+      snaps.forEach(snap => { if (snap.exists) serialLines.push(...((snap.data().lines) || [])); });
+      serialLines.sort((a, b) => (a.date + a.voucher_no).localeCompare(b.date + b.voucher_no));
+      return serialLines;
+    })
+    .finally(() => { serialLoading = null; });
+  return serialLoading;
+}
+// Serials are typed every which way -- "5CD-1234 XYZ", "SN: 5cd1234xyz" --
+// so both sides are compared as letters and digits only, any case.
+const serialKey = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+function serialKind(r){
+  const base = (r.base || '').toLowerCase();
+  if (base === 'purchase' || base === 'receipt note') return ['Bought', 'in'];
+  if (base === 'sales') return ['Sold', 'out'];
+  if (base === 'delivery note') return ['Delivered', 'out'];
+  if (base === 'credit note' || base === 'rejections in') return ['Returned by customer', 'back'];
+  if (base === 'debit note' || base === 'rejections out') return ['Returned to supplier', 'back'];
+  return [r.type || 'Entry', ''];
+}
+let serialSearchToken = 0;
+async function searchSerials(){
+  const q = serialKey(document.getElementById('serialInput').value);
+  const body = document.getElementById('serialBody'), count = document.getElementById('serialMatches');
+  const token = ++serialSearchToken;
+  if (q.length < 3){
+    count.textContent = '';
+    body.innerHTML = '<tr><td colspan="4" class="empty-note">Type at least 3 characters of a serial number.</td></tr>';
+    return;
+  }
+  if (!serialLines) body.innerHTML = '<tr><td colspan="4" class="empty-note">Loading the serial numbers…</td></tr>';
+  let lines;
+  try { lines = await loadSerialLines(); }
+  catch (e){
+    console.error(e);
+    if (token === serialSearchToken) body.innerHTML = '<tr><td colspan="4" class="empty-note">Could not load -- check your internet connection.</td></tr>';
+    return;
+  }
+  if (token !== serialSearchToken) return;
+  const hits = lines.filter(r => serialKey(r.text).includes(q));
+  const shown = hits.slice(0, 200);
+  count.textContent = hits.length ? hits.length + ' bill line' + (hits.length === 1 ? '' : 's') : '';
+  const today = todayISO();
+  const since = serialIndex && serialIndex.from ? isoToShort(serialIndex.from + '-01') : '';
+  body.innerHTML = shown.length ? shown.map(r => {
+    const [word, cls] = serialKind(r);
+    const days = Math.round((new Date(today + 'T00:00:00') - new Date(r.date + 'T00:00:00')) / 86400000);
+    return `<tr>
+      <td><span style="white-space:nowrap">${escapeHtml(isoToShort(r.date))}</span><div class="serial-text">${days} day${days === 1 ? '' : 's'} ago</div></td>
+      <td><span class="serial-kind ${cls}">${escapeHtml(word)}</span>${escapeHtml(r.party || '')}</td>
+      <td>${escapeHtml(r.item || '')}${r.qty ? ' <span class="serial-text">(' + escapeHtml(r.qty) + ')</span>' : ''}<div class="serial-text">${escapeHtml(r.text)}</div></td>
+      <td>${escapeHtml(r.type || '')} ${escapeHtml(r.voucher_no || '')}</td>
+    </tr>`;
+  }).join('') + (hits.length > shown.length ? `<tr><td colspan="4" class="empty-note">and ${hits.length - shown.length} more -- type more of the number.</td></tr>` : '')
+    : `<tr><td colspan="4" class="empty-note">No bill has a serial number containing “${escapeHtml(document.getElementById('serialInput').value.trim())}”.` +
+      (since ? ` Bills are searched from ${escapeHtml(since)}; anything bought before that isn't in the dashboard.` : '') + '</td></tr>';
+}
+document.getElementById('serialInput').addEventListener('input', searchSerials);
+
 let shownProformas = [];
 function renderProformaTable(rows){
   shownProformas = rows;
@@ -1700,6 +1824,13 @@ wireExpandableCard('challanCard', 'challanDetail');
 wireExpandableCard('debtorsCard', 'debtorsDetail');
 wireExpandableCard('stockCard', 'stockDetail');
 wireExpandableCard('creditorsCard', 'creditorsDetail');
+wireExpandableCard('serialCard', 'serialDetail');
+// Opening the tile is asking to search, so the cursor goes straight there.
+document.getElementById('serialCard').addEventListener('click', (e) => {
+  if (document.getElementById('serialDetail').classList.contains('open') && !e.target.closest('#serialDetail')){
+    document.getElementById('serialInput').focus();
+  }
+});
 
 // A search box in every tile that opens (the owner's request, 6 Oct 2026).
 // It hides the rows that don't match what's typed: every word has to
@@ -2050,6 +2181,7 @@ auth.onAuthStateChanged((user) => {
     attachProformaListener();
     attachPartyListener();
     attachStockListener();
+    attachSerialListener();
     attachSyncStatusListener();
   } else if (handlingEmailLink) {
     // Mid sign-in via the emailed link -- leave whatever screen is
@@ -2064,6 +2196,7 @@ auth.onAuthStateChanged((user) => {
     detachProformaListener();
     detachPartyListener();
     detachStockListener();
+    detachSerialListener();
     detachSyncStatusListener();
   }
 });
