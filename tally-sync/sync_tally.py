@@ -490,6 +490,10 @@ def fetch_voucher_type_parents(date, dump_raw_dir=None):
     return parents
 
 
+VOUCHER_FETCH_FIELDS = ["DATE", "VOUCHERNUMBER", "PARTYLEDGERNAME", "VOUCHERTYPENAME", "NARRATION",
+                        "ISOPTIONAL", "ISCANCELLED", "ALLLEDGERENTRIES.LIST", "ALLINVENTORYENTRIES.LIST"]
+
+
 def _fetch_all_voucher_records(anchor_date, dump_raw_dir=None):
     """One Tally request for every voucher it's willing to return -- empirically
     the whole financial year, since Tally's Voucher collection ignores
@@ -497,11 +501,11 @@ def _fetch_all_voucher_records(anchor_date, dump_raw_dir=None):
     day) and fetch_vouchers_grouped_by_date (a backfill across many days), so
     a backfill needs this request only once instead of once per day.
     """
+    extra = _serial_fetch_field()
     xml_req = _collection_request(
         "VchList",
         "Voucher",
-        ["DATE", "VOUCHERNUMBER", "PARTYLEDGERNAME", "VOUCHERTYPENAME", "NARRATION",
-         "ISOPTIONAL", "ISCANCELLED", "ALLLEDGERENTRIES.LIST", "ALLINVENTORYENTRIES.LIST"],
+        VOUCHER_FETCH_FIELDS + ([extra] if extra else []),
         anchor_date,
         anchor_date,
     )
@@ -695,6 +699,80 @@ def _pending_proforma_records(vouchers):
     return records
 
 
+# Asking Tally for ALLINVENTORYENTRIES.LIST gives each stock line's item,
+# quantity and amount, but not the description lines typed under the item
+# -- where the serial number goes. Found on 9 Oct 2026: the first sync with
+# the Serial No. Search found none, while Tally showed "Sr.No.5MLLTK4" under
+# a Dell laptop on purchase 1587. Tally only sends a sub-list when it is
+# named in the request, and how it wants it named isn't something that can
+# be tried from anywhere but the Tally PC. So when a sync finds no
+# descriptions it asks Tally once with each of these in turn, keeps the
+# first one Tally answers with descriptions in SERIAL_FETCH_FILE, and every
+# voucher fetch after that includes it -- one request, as before.
+SERIAL_FETCH_CANDIDATES = [
+    "ALLINVENTORYENTRIES.BASICUSERDESCRIPTION",
+    "AllInventoryEntries.BasicUserDescription",
+    "ALLINVENTORYENTRIES.LIST.BASICUSERDESCRIPTION.LIST",
+    "ALLINVENTORYENTRIES.*",
+]
+SERIAL_FETCH_FILE = "serials_fetch.txt"
+
+
+def _serial_fetch_field():
+    """The FETCH field that makes Tally send item descriptions on this PC,
+    or None -- see SERIAL_FETCH_CANDIDATES."""
+    try:
+        with open(os.path.join(SCRIPT_DIR, SERIAL_FETCH_FILE), encoding="utf-8") as f:
+            line = f.read().strip()
+        return line if line in SERIAL_FETCH_CANDIDATES else None
+    except OSError:
+        return None
+
+
+def _probe_serial_fetch():
+    """Tries SERIAL_FETCH_CANDIDATES (see there) and returns (field, the
+    vouchers Tally sent with it) for the first that brings descriptions, or
+    (None, None). Tried at most once a day: the file records a day when
+    none worked. Stops at the first request Tally doesn't answer in time,
+    so a slow Tally isn't asked again and again."""
+    path = os.path.join(SCRIPT_DIR, SERIAL_FETCH_FILE)
+    today = datetime.date.today().isoformat()
+    try:
+        with open(path, encoding="utf-8") as f:
+            if f.read().strip() == "none " + today:
+                return None, None
+    except OSError:
+        pass
+    for field in SERIAL_FETCH_CANDIDATES:
+        try:
+            root = _post_xml(_collection_request("VchList", "Voucher", VOUCHER_FETCH_FIELDS + [field],
+                                                 datetime.date.today(), datetime.date.today()),
+                             dump_name="vouchers with " + field, timeout=120, max_attempts=1)
+        except TallyError as e:
+            log.info("Item descriptions: Tally didn't take %s -- %s", field, e)
+            if isinstance(e, TallyTimeout) or "timed out" in str(e).lower():
+                break
+            continue
+        vouchers = _collection_records(root, "VOUCHER")
+        if any(_description_texts(inv) for v in vouchers for inv in v.findall(".//ALLINVENTORYENTRIES.LIST")):
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(field)
+            log.info("Item descriptions: Tally sends them when asked for %s -- every sync asks for it now.", field)
+            return field, vouchers
+        log.info("Item descriptions: none with %s", field)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("none " + today)
+    return None, None
+
+
+def _description_texts(inv):
+    """The description lines typed under the item on one stock line, in
+    whatever nesting Tally sends them (BASICUSERDESCRIPTION, inside a .LIST
+    or not)."""
+    return [t.text.strip() for t in inv.iter()
+            if t.tag.upper().startswith("BASICUSERDESCRIPTION") and t.text and t.text.strip()]
+
+
 def _serial_lines(vouchers, type_parents):
     """Every stock line on a real bill (not a proforma, an optional or a
     cancelled voucher) with text typed under the item in Tally -- the item
@@ -714,7 +792,7 @@ def _serial_lines(vouchers, type_parents):
         if len(date_iso) != 10:
             continue
         for inv in v.findall(".//ALLINVENTORYENTRIES.LIST"):
-            texts = [t.text.strip() for t in inv.iter("BASICUSERDESCRIPTION") if t.text and t.text.strip()]
+            texts = _description_texts(inv)
             batches = [b for b in (_text(x, "BATCHNAME") for x in inv.findall("BATCHALLOCATIONS.LIST"))
                        if b and b.lower() not in ("primary batch", "any", "not applicable", "end of list")]
             text = " | ".join(dict.fromkeys(texts + batches))
@@ -745,6 +823,12 @@ def push_serial_index(vouchers, type_parents):
     written, or None if they couldn't be."""
     try:
         by_month = _serial_lines(vouchers, type_parents)
+        how = _serial_fetch_field()
+        if not by_month and not how:
+            how, probed = _probe_serial_fetch()
+            if probed:
+                vouchers = probed
+                by_month = _serial_lines(vouchers, type_parents)
         first = _earliest_voucher_date(vouchers)[:7]
         last = max([datetime.date.today().isoformat()[:7]] + list(by_month))
         db = _firestore_db()
@@ -762,7 +846,8 @@ def push_serial_index(vouchers, type_parents):
                 months.pop(month, None)
             y, m = (y + 1, 1) if m == 12 else (y, m + 1)
         col.document(SERIALS_DOC).set({"months": months, "as_of": _utc_now().isoformat(),
-                                       "from": min(months) if months else None})
+                                       "from": min(months) if months else None,
+                                       "descriptions": "read" if (how or by_month) else "not given by Tally"})
         written = sum(len(v) for v in by_month.values())
         log.info("Serial No. Search: %d item lines with a description, %d months in all", written, len(months))
         return written
