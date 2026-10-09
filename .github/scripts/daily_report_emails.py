@@ -816,6 +816,12 @@ RECEIPTS_LOOKBACK_DAYS = 365
 AI_URL = "https://api.anthropic.com/v1/messages"
 AI_MODEL = os.environ.get("AI_MODEL") or "claude-sonnet-5-5"
 SIGN_OFF = "Accounts Team\nR. S. Infotech"
+# A loan given to someone ("Samarth B Patel Loan") sits under Sundry Debtors
+# in Tally, but it isn't a customer's unpaid invoice, and a reminder saying
+# "the following invoice is pending" would be wrong to send for it. Left off
+# the call list and the briefing's calls at the owner's request (9 Oct 2026);
+# it still counts in the debtors' totals, as in Tally.
+_LOAN = re.compile(r"\bloans?\b", re.I)
 # Number words count as numbers: an AI message that spells out an amount
 # is as wrong as one that writes it in digits.
 _NUMBER_WORDS = re.compile(r"\b(lakhs?|lacs?|crores?|thousands?|hundreds?|percent|rupees?|rs)\b|[₹%#]", re.I)
@@ -865,6 +871,8 @@ def _call_list(doc, today, receipts):
         if direct and (row.get("amount") or 0) <= 0.5:
             continue
         for name, owed in by_party.items():
+            if _LOAN.search(name) or _LOAN.search(row.get("name") or ""):
+                continue
             late = []
             for b in owed:
                 try:
