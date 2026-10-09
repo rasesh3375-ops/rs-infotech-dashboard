@@ -1,4 +1,4 @@
-# Emails the day's Daily Cash Transactions, Daily Bank Transactions,
+# Emails the Daily Business Briefing and the day's Daily Cash Transactions, Daily Bank Transactions,
 # Daily Purchase Entries and Daily Sales Entries every evening at 6:45 PM
 # (after asking the Tally PC to sync), and the
 # Pending Delivery Challans, Pending Proforma Invoices and the Stock Summary
@@ -32,9 +32,9 @@ on:
         required: false
         default: ''
       report:
-        description: 'Which emails (daily = the four daily ones, weekly = the two pending lists and the stock, debtors = pending 60+ days, calls = collection call list)'
+        description: 'Which emails (daily = the briefing and the four daily ones, weekly = the two pending lists and the stock, debtors = pending 60+ days, calls = collection call list)'
         type: choice
-        options: [daily, weekly, debtors, calls, cash, bank, purchase, sales, challans, proformas, stock]
+        options: [daily, weekly, debtors, calls, briefing, cash, bank, purchase, sales, challans, proformas, stock]
         default: daily
 
 # Read the code and nothing else: nothing here pushes, comments or edits the
