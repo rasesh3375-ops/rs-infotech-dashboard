@@ -7,6 +7,8 @@ figures the Tally sync has already stored in Firestore (daily_reports):
   Daily Bank Transactions   the same for the bank accounts, per bank
   Daily Purchase Entries    purchases before and with GST, every entry
   Daily Sales Entries       sales before and with GST, every entry
+  Daily Business Briefing   (sent first) what the day's figures mean and what
+                            needs doing, in a few lines -- see _briefing_report
 
 every Saturday, three more, and one every Monday:
 
@@ -36,8 +38,8 @@ repository is public:
                             list's reminders; without it they're standard wording
 
 Usage:
-  python daily_report_emails.py                        # the four daily ones, for today (India time)
-  python daily_report_emails.py 2026-10-03             # the four daily ones, for a given day
+  python daily_report_emails.py                        # the briefing and the four daily ones, for today (India time)
+  python daily_report_emails.py 2026-10-03             # the same, for a given day
   python daily_report_emails.py --report=weekly        # the two pending lists and the stock, as they stand now
   python daily_report_emails.py --report=monday        # the debtors pending 60+ days and the call list
   python daily_report_emails.py --report=cash,bank     # only some of them
@@ -50,6 +52,7 @@ import json
 import os
 import re
 import smtplib
+import statistics
 import sys
 from email.message import EmailMessage
 from zoneinfo import ZoneInfo
@@ -1119,6 +1122,266 @@ def _call_list_report(data, today):
     return lines, body
 
 
+# --- the daily business briefing --------------------------------------------
+#
+# One short email that says what the day's figures mean and what needs doing,
+# so the owner needn't read the other reports to find out (asked for on
+# 9 Oct 2026). Every line is a plain rule over figures the other emails
+# already use -- a day far from the last four weeks' average is called out,
+# a challan unbilled for a month is a bill not raised -- so it costs nothing,
+# needs no API key, and every figure in it is Tally's own.
+
+# Today is compared with the usual day (the median) over this many days before it.
+BRIEFING_BASELINE_DAYS = 28
+# How far from that average a day has to be to be called above or below it.
+BRIEFING_UNUSUAL = 0.25
+# Stock held this long is called out as old.
+BRIEFING_OLD_STOCK_DAYS = 180
+# How many names each line gives: customers to call, payments, suppliers.
+BRIEFING_TOP = 3
+BRIEFING_COLOURS = {"good": GREEN, "bad": RED, "watch": "#c77700", "info": DIM}
+
+
+def read_day_totals(day):
+    """{date: {"sales": ..., "purchase": ...}} -- each synced day's sales
+    and purchase totals with GST, from the first of last month (or
+    BRIEFING_BASELINE_DAYS back, if earlier) up to day. Only those two
+    figures of each day are fetched."""
+    start = min((day.replace(day=1) - datetime.timedelta(days=1)).replace(day=1),
+                day - datetime.timedelta(days=BRIEFING_BASELINE_DAYS))
+    out = {}
+    for snap in _db().collection(COLLECTION).select(["sales.total", "purchase.total"]).stream():
+        if start.isoformat() <= snap.id <= day.isoformat():
+            d = snap.to_dict() or {}
+            out[snap.id] = {k: (d.get(k) or {}).get("total") or 0 for k in ("sales", "purchase")}
+    return out
+
+
+def read_briefing(day, report):
+    """Everything the briefing draws on. A part that can't be read is None
+    and the briefing says so on that line; the rest still goes out."""
+    def attempt(what, read):
+        try:
+            return read()
+        except Exception as ex:
+            print(f"::warning::Briefing: {what} not read: {ex}")
+            return None
+    calls = attempt("debtors", lambda: read_pending("calls")) or {}
+    return {"report": report, "totals": attempt("recent days", lambda: read_day_totals(day)),
+            "balances": calls.get("balances"), "receipts": calls.get("receipts"),
+            "stock": attempt("stock", lambda: read_pending("stock")),
+            "challans": attempt("challans", lambda: read_pending("challans")),
+            "proformas": attempt("proformas", lambda: read_pending("proformas"))}
+
+
+def _money_moved(report):
+    """(received, paid, payments) for the day: money in and out of the bank
+    and cash, payments biggest first. A Contra -- cash paid into the bank,
+    or one account to another -- is the company's own money changing place,
+    and would count the same rupees in and out, so it's left out."""
+    received, paid, payments = 0, 0, []
+    for key in ("bank_vouchers", "cash_vouchers"):
+        for v in (report.get(key) or {}).get("vouchers") or []:
+            if "contra" in (v.get("type") or "").lower():
+                continue
+            if (v.get("direction") or "").endswith("_in"):
+                received += v.get("amount") or 0
+            else:
+                paid += v.get("amount") or 0
+                payments.append(v)
+    payments.sort(key=lambda v: -(v.get("amount") or 0))
+    return received, paid, payments
+
+
+def _versus(value, usual):
+    """"32% above a usual day (Rs.x)" / "about a usual day" / ""."""
+    if not usual:
+        return ""
+    change = (value - usual) / usual
+    if abs(change) < BRIEFING_UNUSUAL:
+        return "about a usual day"
+    return f"{abs(change):.0%} {'above' if change > 0 else 'below'} a usual day ({inr(usual)})"
+
+
+def _names(rows, show):
+    return ", ".join(show(r) for r in rows[:BRIEFING_TOP]) + (f" and {len(rows) - BRIEFING_TOP} more"
+                                                               if len(rows) > BRIEFING_TOP else "")
+
+
+def _days_old(iso, today):
+    try:
+        return (today - datetime.date.fromisoformat(iso or "")).days
+    except ValueError:
+        return None
+
+
+def _briefing_today(report, totals, day, sync_note):
+    """The day: (tiles, lines). A line is (colour key, bold lead, rest)."""
+    lines = [("bad", "Sync: ", sync_note)] if sync_note else []
+    if report is None:
+        return [], lines + [("bad", "Not synced: ",
+                             "this day hasn't been synced from Tally, so there are no figures for it.")]
+    sales, purchase = report.get("sales") or {}, report.get("purchase") or {}
+    received, paid, payments = _money_moved(report)
+    earlier = [t for d, t in (totals or {}).items()
+               if (day - datetime.timedelta(days=BRIEFING_BASELINE_DAYS)).isoformat() <= d < day.isoformat()
+               and datetime.date.fromisoformat(d).weekday() != 6]
+    # The middle day, not the mean: one big order -- Rs.94 lakh on one day
+    # in October 2026 -- would otherwise make every other day look poor.
+    avg = lambda k: statistics.median(t[k] for t in earlier) if len(earlier) >= 5 else 0
+    tiles = [("SALES", inr(sales.get("total")), INK), ("PURCHASES", inr(purchase.get("total")), INK),
+             ("RECEIVED", inr(received), GREEN), ("PAID", inr(paid), RED)]
+
+    n = sales.get("count") or len(sales.get("vouchers") or [])
+    if n:
+        how = _versus(sales.get("total") or 0, avg("sales"))
+        lines.append(("good" if "above" in how else "watch" if "below" in how else "info",
+                      f"Sales {inr(sales.get('total'))}",
+                      f" in {n} bill{'s' if n != 1 else ''}" + (f" -- {how}." if how else ".")))
+    elif day.weekday() != 6:
+        lines.append(("watch", "No sales ", "entered today."))
+    n = purchase.get("count") or len(purchase.get("vouchers") or [])
+    if n:
+        how = _versus(purchase.get("total") or 0, avg("purchase"))
+        lines.append(("info", f"Purchases {inr(purchase.get('total'))}",
+                      f" in {n} bill{'s' if n != 1 else ''}" + (f" -- {how}." if how else ".")))
+    if received or paid:
+        lines.append(("info", f"Received {inr(received)}, paid {inr(paid)}",
+                      (". Biggest payments: " + _names(payments, lambda v: f"{v.get('party') or v.get('description') or '(no party)'} {inr(v.get('amount'))}")
+                       if payments else "") + "."))
+    bank_ok, _ = _balance_state(report.get("bank_balance"))
+    cash_ok, _ = _balance_state(report.get("cash_balance"))
+    if bank_ok or cash_ok:
+        lines.append(("info", "Closing balance: ", ", ".join(
+            ([f"bank {inr(report['bank_balance']['closing'])}"] if bank_ok else [])
+            + ([f"cash in hand {inr(report['cash_balance']['closing'])}"] if cash_ok else [])) + "."))
+    return tiles, lines
+
+
+def _briefing_month(totals, day):
+    """The month so far against the same days of last month."""
+    if totals is None:
+        return [("info", "Month so far ", "couldn't be read.")]
+    first = day.replace(day=1)
+    last_first = (first - datetime.timedelta(days=1)).replace(day=1)
+    last_end = min(last_first.replace(day=28) + datetime.timedelta(days=4), first) - datetime.timedelta(days=1)
+    last_upto = last_first.replace(day=min(day.day, last_end.day))
+    now = [t for d, t in totals.items() if first.isoformat() <= d <= day.isoformat()]
+    then = [t for d, t in totals.items() if last_first.isoformat() <= d <= last_upto.isoformat()]
+    lines = []
+    sales_now, sales_then = sum(t["sales"] for t in now), sum(t["sales"] for t in then)
+    change = (sales_now - sales_then) / sales_then if sales_then else None
+    lines.append(("good" if change is not None and change >= 0.1 else "watch" if change is not None and change <= -0.1 else "info",
+                  f"Sales this month {inr(sales_now)}",
+                  f" -- same days last month (1-{last_upto.day} {last_upto:%b}): {inr(sales_then)}"
+                  + (f" ({abs(change):.0%} {'higher' if change >= 0 else 'lower'} now)." if change is not None else ".")))
+    lines.append(("info", f"Purchases this month {inr(sum(t['purchase'] for t in now))}", "."))
+    # Sundays aren't expected: the Tally PC is usually off.
+    expected = [first + datetime.timedelta(days=i) for i in range(day.day)]
+    expected = [d for d in expected if d.weekday() != 6]
+    missing = [d for d in expected if d.isoformat() not in totals]
+    if missing:
+        lines.append(("watch", f"{len(missing)} working day{'s' if len(missing) != 1 else ''} not synced",
+                      f" this month ({', '.join(f'{d:%d %b}' for d in missing[:5])}{'...' if len(missing) > 5 else ''}), "
+                      "so the month's figures are short."))
+    return lines
+
+
+def _briefing_attention(data, day):
+    """What needs looking at: rules over the stock, the pending lists and
+    the debtors, as they stand when the email is built."""
+    lines = []
+    stock = data.get("stock")
+    if stock is None:
+        lines.append(("info", "Stock ", "couldn't be read."))
+    else:
+        items, negative, _ = _stock_rows(stock)
+        if negative:
+            lines.append(("bad", f"{len(negative)} item{'s' if len(negative) != 1 else ''} below zero in stock",
+                          " -- " + _names(negative, lambda r: r.get("name") or "") + ". Enter the missing purchase in Tally."))
+        old = [r for r in _in_stock(items, negative) if (r.get("age_days") or 0) >= BRIEFING_OLD_STOCK_DAYS]
+        if old:
+            lines.append(("watch", f"{len(old)} item{'s' if len(old) != 1 else ''} in stock {BRIEFING_OLD_STOCK_DAYS}+ days, "
+                                   f"worth {inr(sum(r.get('value') or 0 for r in old))}",
+                          " -- " + _names(sorted(old, key=lambda r: -(r.get("value") or 0)),
+                                          lambda r: f"{r.get('name')} {inr(r.get('value'))}") + ". Worth clearing."))
+    challans = data.get("challans")
+    if challans is None:
+        lines.append(("info", "Delivery challans ", "couldn't be read."))
+    else:
+        late = sorted((dict(c, days=_days_old(c.get("date"), day)) for c in challans), key=lambda c: c.get("date") or "")
+        late = [c for c in late if (c["days"] or 0) >= OVERDUE_DAYS]
+        if late:
+            lines.append(("bad", f"{len(late)} delivery challan{'s' if len(late) != 1 else ''} not billed for {OVERDUE_DAYS}+ days",
+                          " -- goods delivered with no invoice raised. Oldest: "
+                          + _names(late, lambda c: f"{c.get('party') or '(no party)'} ({c['days']} days)") + "."))
+    proformas = data.get("proformas")
+    if proformas is None:
+        lines.append(("info", "Proforma invoices ", "couldn't be read."))
+    else:
+        late = [p for p in proformas if (_days_old(p.get("date"), day) or 0) >= OVERDUE_DAYS]
+        if late:
+            lines.append(("watch", f"{len(late)} proforma invoice{'s' if len(late) != 1 else ''} waiting {OVERDUE_DAYS}+ days, "
+                                   f"worth {inr(sum(p.get('amount') or 0 for p in late))}",
+                          " -- follow up for the order or cancel them in Tally."))
+    if data.get("balances"):
+        debtors, _, _ = _overdue_debtors(data["balances"], day)
+        if debtors:
+            owed = sum((r.get("late_value") if r.get("late_value") is not None else r.get("amount")) or 0 for r in debtors)
+            lines.append(("watch", f"{inr(owed)} owed for {DEBTOR_OVERDUE_DAYS}+ days",
+                          f" by {len(debtors)} debtor{'s' if len(debtors) != 1 else ''}."))
+    else:
+        lines.append(("info", "Debtors ", "couldn't be read."))
+    if not any(c in ("bad", "watch") or "couldn't" in rest for c, _, rest in lines):
+        lines.append(("good", "Nothing unusual ", "in the stock, the pending lists or the debtors."))
+    return lines
+
+
+def _briefing_next(data, day):
+    """What to do next: the customers to call first (_call_list, the same
+    ranking as Monday's Collection Call List) and the biggest supplier
+    balances, for planning payments."""
+    lines = []
+    if data.get("balances"):
+        people, _ = _call_list(data["balances"], day, data.get("receipts"))
+        for p in [p for p in people if not p["check"]][:BRIEFING_TOP]:
+            paid = (f"last paid {nice_date(p['last_paid'][0])}" if p["last_paid"]
+                    else "no payment in a year" if p["paid_known"] else "")
+            lines.append(("watch", f"Call {p['name']}",
+                          f" -- {inr(p['late_value'])} overdue, oldest bill {p['days']} days" + (f", {paid}" if paid else "") + "."))
+        creditors = sorted((r for r in (data["balances"].get("creditors") or {}).get("parties") or [] if (r.get("amount") or 0) > 0.5),
+                           key=lambda r: -r["amount"])
+        if creditors:
+            lines.append(("info", "Biggest supplier balances: ", _names(creditors, lambda r: f"{r['name']} {inr(r['amount'])}"
+                                                                         + (f" (oldest bill {r['days']} days)" if r.get("days") is not None else "")) + "."))
+    if not lines:
+        lines.append(("info", "Debtors and creditors ", "couldn't be read."))
+    return lines
+
+
+def _briefing_report(data, day, sync_note=""):
+    """The Daily Business Briefing: (text lines, html body)."""
+    tiles, today = _briefing_today(data.get("report"), data.get("totals"), day, sync_note)
+    sections = [("Today", today), ("This month", _briefing_month(data.get("totals"), day)),
+                ("Needs attention", _briefing_attention(data, day)), ("Next steps", _briefing_next(data, day))]
+    text, body = [], _tiles(tiles) if tiles else ""
+    for title, rows in sections:
+        text += ["", title.upper()] + [f"{'!' if c == 'bad' else '*' if c == 'watch' else '-'} {lead}{rest}" for c, lead, rest in rows]
+        body += (f'<div style="font-size:14px;font-weight:700;color:{NAVY};margin:16px 0 4px;padding-bottom:4px;'
+                 f'border-bottom:2px solid {LINE}">{e(title)}</div>')
+        for c, lead, rest in rows:
+            body += (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+                     f'<td width="18" style="vertical-align:top;padding:7px 0;color:{BRIEFING_COLOURS[c]};font-size:13px">&#9679;</td>'
+                     f'<td style="vertical-align:top;padding:7px 0;font-size:13.5px;line-height:1.45;color:{INK};border-bottom:1px solid {ZEBRA}">'
+                     f'<b>{e(lead)}</b>{e(rest)}</td></tr></table>')
+    when = _synced_when(data["report"]) if data.get("report") else ""
+    note = ("Sales and purchases are with GST, as in the Daily Sales and Purchase Entries. "
+            "Stock, challans, proformas and debtors are as they stand now."
+            + (f" Day synced from Tally at {when}." if when else ""))
+    body += f'<div style="height:12px"></div>' + _note(note)
+    return text[1:] + ["", note], body
+
+
 # Every report: its email subject's name, whether it's a daily report of
 # one day (reads that day's daily_reports document) or a list as it stands
 # now, and how to build it.
@@ -1136,13 +1399,17 @@ REPORTS = {
     "stock": ("Stock Summary", _stock_report),
     "debtors": ("Debtors Pending 60+ Days", _overdue_debtors_report),
     "calls": ("Collection Call List", _call_list_report),
+    "briefing": ("Daily Business Briefing", _briefing_report),
 }
 DAILY = ["cash", "bank", "purchase", "sales"]
+# Reads the day's daily_reports document like the four, and the lists as
+# they stand now besides (read_briefing). Sent first in the evening.
+BRIEFING = "briefing"
 # Lists as they stand now, dated the day they're sent (not one day's figures).
 WEEKLY = ["challans", "proformas", "stock", "debtors", "calls"]
 # Saturday's three, and the debtors on Monday morning -- moved there at the
 # owner's request so the follow-up calls start the same week.
-GROUPS = {"daily": DAILY, "weekly": ["challans", "proformas", "stock"], "monday": ["debtors", "calls"], "all": DAILY}
+GROUPS = {"daily": [BRIEFING] + DAILY, "weekly": ["challans", "proformas", "stock"], "monday": ["debtors", "calls"], "all": DAILY}
 
 
 def build_email(kind, day, report, sync_note=""):
@@ -1156,6 +1423,11 @@ def build_email(kind, day, report, sync_note=""):
     name, build = REPORTS[kind]
     label = day.strftime("%A, %d %b %Y")
     subject = f"{name} - {day:%d %b %Y}"
+    if kind == BRIEFING:
+        # report is read_briefing's bundle; a day not synced is a line in it.
+        lines, body = build(report, day, sync_note)
+        text = "\n".join([f"R. S. Infotech -- {name} for {label}", ""] + lines + ["", DASHBOARD_URL])
+        return subject, text, _wrap(name, label, body)
     if kind in WEEKLY:
         if report is None:
             msg = "This list hasn't been synced from Tally yet."
@@ -1301,7 +1573,7 @@ def main():
     if missing and not dry_run:
         print(f"::warning::Daily emails not sent -- repository secret(s) not set yet: {', '.join(missing)}")
         return 0
-    kinds = list(DAILY)
+    kinds = list(GROUPS["daily"])
     for a in sys.argv[1:]:
         if a.startswith("--report="):
             kinds = []
@@ -1313,14 +1585,15 @@ def main():
                 elif k:
                     print(f"Unknown report: {k} -- choose from {', '.join(list(GROUPS) + list(REPORTS))}")
                     return 2
-            kinds = list(dict.fromkeys(kinds)) or list(DAILY)
+            kinds = list(dict.fromkeys(kinds)) or list(GROUPS["daily"])
     dates = [a for a in sys.argv[1:] if not a.startswith("--") and a]
     today = datetime.datetime.now(IST).date()
     day = datetime.date.fromisoformat(dates[0]) if dates else today
     sync_note = ""
-    if any(k in DAILY for k in kinds) and day == today and not dry_run:
+    of_the_day = any(k in DAILY or k == BRIEFING for k in kinds)
+    if of_the_day and day == today and not dry_run:
         sync_note = request_sync()
-    report = read_report(day) if any(k in DAILY for k in kinds) else None
+    report = read_report(day) if of_the_day else None
     failed = []
     # One email per report; one failing to send doesn't stop the others.
     for kind in kinds:
@@ -1334,6 +1607,8 @@ def main():
             if kind == "debtors" and listed:
                 attachments.append((f"Debtors Pending {DEBTOR_OVERDUE_DAYS}+ Days {today:%d %b %Y}.pdf",
                                     debtors_pdf(listed, today)))
+        elif kind == BRIEFING:
+            subject, text, html_body = build_email(kind, day, read_briefing(day, report), sync_note)
         else:
             subject, text, html_body = build_email(kind, day, report, sync_note)
         if dry_run:
