@@ -568,7 +568,7 @@
     </div>
 
     <div class="card pl-card">
-      <div class="kicker">Net profit / loss</div>
+      <div class="kicker" id="plKicker">Net profit / loss</div>
       <div class="stat-count" id="plAmount">₹0</div>
       <div class="pl-range-label" id="plRangeLabel"></div>
       <div class="review-flag" id="plReviewFlag" style="display:none;"></div>
@@ -970,20 +970,18 @@ function renderPlAmount(net, needsReview, reasonText){
 async function loadPlPeriod(period, token){
   const rangeLabelEl = document.getElementById('plRangeLabel');
 
+  // On the Daily view the tile shows the month so far, not the day. One
+  // day's profit swung wildly for reasons that had nothing to do with how
+  // the day went -- rent and salaries are entered on one day a month, and
+  // each day carries its own stock valuation -- so on 9 Oct 2026, with
+  // the owner about to remove the tile, it was changed to the month the
+  // day falls in: Tally's own P&L for it, as the Monthly view shows.
+  const kicker = document.getElementById('plKicker');
   if (period === 'daily'){
-    // A day with no synced document has no P&L at all -- that's "not
-    // synced yet", not a P&L Tally couldn't read. It used to show the
-    // second, with "(unknown reason)", on every unsynced day, e.g. a
-    // Sunday opened on the owner's iPhone before anything had run.
-    const pl = lastDailyData && lastDailyData.profit_and_loss;
-    if (!pl){
-      renderPlAmount(null, true, "This day hasn't been synced from Tally yet.");
-    } else {
-      renderPlAmount(pl.net_profit_loss, pl.needs_review || pl.net_profit_loss === null,
-        'Could not read a clear P&L figure from Tally for this day — check the sync script log. (' + (pl.reason || 'unknown reason') + ')');
-    }
-    rangeLabelEl.textContent = '';
-    return;
+    period = 'monthly';
+    kicker.textContent = 'Net profit · this month';
+  } else {
+    kicker.textContent = 'Net profit / loss';
   }
 
   // Tally's own P&L for the whole period, which sync_tally.py requests and
@@ -1008,7 +1006,10 @@ async function loadPlPeriod(period, token){
     }
     const report = snap.data();
     const pl = report.profit_and_loss || {};
-    rangeLabelEl.textContent = report.complete ? '' : 'Tally figure up to ' + isoToShort(report.to);
+    const monthName = new Date(toISO(start) + 'T00:00:00').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+    rangeLabelEl.textContent = kicker.textContent.endsWith('this month')
+      ? monthName + (report.complete ? '' : ' · up to ' + isoToShort(report.to))
+      : report.complete ? '' : 'Tally figure up to ' + isoToShort(report.to);
     renderPlAmount(pl.net_profit_loss ?? null, pl.needs_review || pl.net_profit_loss == null,
       'Could not read a clear P&L figure from Tally for this ' + label + ' — check the sync script log. (' + (pl.reason || 'unknown reason') + ')');
   } catch (e){
