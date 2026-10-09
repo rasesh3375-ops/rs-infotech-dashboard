@@ -2065,6 +2065,33 @@ LISTENER_HEARTBEAT_SECONDS = 300
 # whenever the PC next starts would only surprise someone.
 LISTENER_STALE_REQUEST_MINUTES = 30
 
+# On 8 Oct 2026 the owner was out, the laptop was off, and that day was never
+# synced: Sync now only syncs today, and the 10 AM run that re-syncs the
+# last week was closed when its window came up the next morning. So each
+# sync the listener runs first looks at the last CATCH_UP_DAYS days and, if
+# any is missing or was last synced before it ended (entries made after
+# that aren't in it), syncs from the earliest such day to today in one go.
+CATCH_UP_DAYS = 7
+CATCH_UP_FROM_HOUR = 11
+# A day Tally can't give (it fails every time) stays behind; this keeps the
+# retry to every few hours instead of every sync. Sync now always retries.
+CATCH_UP_EVERY_HOURS = 3
+
+
+def _days_behind(db, today):
+    """The days of the last CATCH_UP_DAYS before today, oldest first, that
+    aren't in daily_reports or were last synced on the day itself. synced_at
+    is the PC's own clock, India time, as YYYY-MM-DDTHH:MM:SS, so a plain
+    string comparison with the next day's date tells which."""
+    behind = []
+    for n in range(CATCH_UP_DAYS, 0, -1):
+        day = today - datetime.timedelta(days=n)
+        snap = db.collection(FIRESTORE_COLLECTION).document(day.isoformat()).get()
+        synced = str(((snap.to_dict() or {}) if snap.exists else {}).get("synced_at") or "")
+        if synced < (day + datetime.timedelta(days=1)).isoformat():
+            behind.append(day)
+    return behind
+
 
 def _sync_role():
     """"primary" on the main sync PC, "backup" anywhere else -- see
@@ -2153,6 +2180,7 @@ class _Listener:
     turn it is -- see _primary_elsewhere."""
 
     def __init__(self, db, run_sync, role=None, data_dir=None, newest_change=None):
+        self.db = db
         self.control = db.collection(SYNC_CONTROL_COLLECTION)
         self.run_sync = run_sync
         self.host = _host_name()
@@ -2166,6 +2194,7 @@ class _Listener:
         self.last_beat = 0.0
         self.active = self.role == "primary"
         self.last_sync = 0.0
+        self.last_catch_up = 0.0
         # Whatever Tally's counters say at start-up counts as synced; a
         # change from here on is what triggers a sync.
         self.synced_change = self.newest_change(self.data_dir)
@@ -2221,34 +2250,52 @@ class _Listener:
                 and time.time() - self.seen_change_at >= CHANGE_QUIET_SECONDS
                 and time.time() - self.last_sync >= CHANGE_MIN_GAP_MINUTES * 60):
             self.synced_change = self.seen_change
-            self._sync("change", {})
+            self._sync("change", {}, now_local)
             return
 
         slot = now_local.strftime("%Y-%m-%dT%H")
         if (HOURLY_SYNC_FROM_HOUR <= now_local.hour <= HOURLY_SYNC_TO_HOUR
                 and slot != self.last_hourly_slot):
             self.last_hourly_slot = slot
-            self._sync("hourly", {"last_hourly_slot": slot})
+            self._sync("hourly", {"last_hourly_slot": slot}, now_local)
 
-    def _sync(self, trigger, extra):
+    def _sync(self, trigger, extra, now_local=None):
         self.last_sync = time.time()
+        # A day missed while this PC was off is filled in by the same sync
+        # (see _days_behind) -- after CATCH_UP_FROM_HOUR, so it doesn't race
+        # the 10 AM run doing the same thing, or straight away when Sync now
+        # is pressed.
+        behind = []
+        if trigger == "button" or ((now_local or datetime.datetime.now()).hour >= CATCH_UP_FROM_HOUR
+                                   and time.time() - self.last_catch_up >= CATCH_UP_EVERY_HOURS * 3600):
+            try:
+                behind = _days_behind(self.db, datetime.date.today())
+            except Exception as e:
+                log.warning("Couldn't check the last %d days for gaps: %s", CATCH_UP_DAYS, e)
+        if behind:
+            self.last_catch_up = time.time()
+            log.info("Days missed or synced before they ended: %s -- syncing from %s to today",
+                     ", ".join(d.isoformat() for d in behind), behind[0])
         self._status({**extra, "state": "running", "trigger": trigger, "host": self.host,
-                      "started_at": _utc_now().isoformat()})
-        ok, message = self.run_sync()
+                      "started_at": _utc_now().isoformat(),
+                      "catching_up_from": behind[0].isoformat() if behind else None})
+        ok, message = self.run_sync(behind[0]) if behind else self.run_sync()
         self._status({"state": "idle", "ok": ok, "message": message, "trigger": trigger,
                       "finished_at": _utc_now().isoformat()})
         log.info("%s sync %s%s", trigger, "done" if ok else "FAILED", f" -- {message}" if message else "")
 
 
-def _sync_today_in_subprocess():
+def _sync_today_in_subprocess(catch_up_from=None):
     """Runs "sync_tally.py" for today as its own process, so every sync uses
     the copy on disk -- which the 10 AM run keeps up to date from GitHub --
     rather than whatever version this long-running listener started with.
-    Returns (ok, message), the message being the last error line, worded
-    for the dashboard."""
+    With catch_up_from, every day from then to today instead (a backfill),
+    for the days _days_behind found. Returns (ok, message), the message
+    being the last error line, worded for the dashboard."""
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    extra = ["--backfill-from", catch_up_from.isoformat()] if catch_up_from else []
     try:
-        proc = subprocess.run([sys.executable, os.path.abspath(__file__)], cwd=SCRIPT_DIR,
+        proc = subprocess.run([sys.executable, os.path.abspath(__file__)] + extra, cwd=SCRIPT_DIR,
                               capture_output=True, text=True, timeout=45 * 60, creationflags=flags)
     except subprocess.TimeoutExpired:
         return False, "The sync took over 45 minutes and was stopped -- Tally may have hung."
