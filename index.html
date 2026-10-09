@@ -174,6 +174,41 @@
   .users-msg.ok{ color:#167a51; }
   .users-hint{ color:var(--text-dim); font-size:12px; margin-top:8px; }
   body.no-pl .pl-card{ display:none !important; }
+  /* Ask your data. */
+  .ask-box{ background:var(--panel); border-radius:14px; max-width:760px; margin:0 auto; box-shadow:0 12px 40px rgba(17,17,17,0.25);
+    display:flex; flex-direction:column; height:calc(100vh - 48px); max-height:860px; overflow:hidden; }
+  .ask-head{ display:flex; justify-content:space-between; align-items:center; padding:14px 18px 10px; border-bottom:1px solid var(--panel-edge); }
+  .ask-head h2{ margin:0; font-size:19px; }
+  .ask-head small{ display:block; color:var(--text-dim); font-size:12px; font-weight:400; margin-top:2px; }
+  .ask-log{ flex:1 1 auto; overflow-y:auto; padding:14px 18px; background:var(--bg); }
+  .ask-msg{ max-width:88%; margin:0 0 12px; padding:10px 13px; border-radius:12px; font-size:14px; line-height:1.5; overflow-wrap:anywhere; }
+  .ask-msg.q{ margin-left:auto; background:#14539a; color:#fff; border-bottom-right-radius:4px; white-space:pre-wrap; }
+  .ask-msg.a{ background:var(--panel); border:1px solid var(--panel-edge); border-bottom-left-radius:4px; }
+  .ask-msg.a p{ margin:0 0 8px; } .ask-msg.a p:last-child{ margin-bottom:0; }
+  .ask-msg.a ul, .ask-msg.a ol{ margin:4px 0 8px; padding-left:20px; }
+  .ask-msg.a li{ margin:2px 0; }
+  .ask-msg.a table{ border-collapse:collapse; width:100%; margin:6px 0 8px; font-size:13px; }
+  .ask-msg.a th{ text-align:left; font-size:11.5px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.3px; padding:5px 6px; border-bottom:1px solid var(--panel-edge); }
+  .ask-msg.a td{ padding:5px 6px; border-bottom:1px solid rgba(17,17,17,0.06); vertical-align:top; }
+  .ask-msg.a td.num, .ask-msg.a th.num{ text-align:right; white-space:nowrap; }
+  .ask-msg.a .src{ margin-top:8px; padding-top:6px; border-top:1px dashed var(--panel-edge); color:var(--text-dim); font-size:11.5px; }
+  .ask-msg.a.err{ border-color:#f0c27a; background:#fff8ec; color:#7a4b00; }
+  .ask-msg.a.busy{ color:var(--text-dim); font-style:italic; }
+  .ask-hello{ color:var(--text-dim); font-size:13.5px; margin:0 0 10px; }
+  .ask-chips{ display:flex; flex-wrap:wrap; gap:6px; margin:0 0 12px; }
+  .ask-chips button{ font:inherit; font-size:13px; padding:6px 10px; border-radius:16px; border:1px solid var(--panel-edge); background:var(--panel); color:#14539a; cursor:pointer; text-align:left; }
+  .ask-chips button:hover{ background:rgba(20,83,154,0.07); }
+  .ask-form{ display:flex; gap:8px; padding:10px 14px 12px; border-top:1px solid var(--panel-edge); background:var(--panel); align-items:flex-end; }
+  .ask-form textarea{ flex:1 1 auto; min-width:0; font:inherit; font-size:15px; padding:9px 11px; border:1px solid var(--panel-edge); border-radius:10px;
+    background:var(--bg); color:var(--text); resize:none; height:42px; max-height:120px; }
+  .ask-form textarea:focus{ outline:none; border-color:#14539a; box-shadow:0 0 0 3px rgba(20,83,154,0.12); }
+  .ask-form button{ flex:0 0 auto; height:42px; padding:0 16px; }
+  .ask-foot{ color:var(--text-dim); font-size:11px; padding:0 16px 10px; background:var(--panel); }
+  @media (max-width: 640px){
+    .ask-overlay{ padding:0 !important; }
+    .ask-box{ border-radius:0; height:100vh; height:100dvh; max-height:none; }
+    .ask-msg{ max-width:94%; }
+  }
   @media (max-width: 640px){
     .users-fields{ grid-template-columns:1fr; }
     .users-table thead{ display:none; }
@@ -551,6 +586,7 @@
       </span>
       <button class="ctrl-btn" id="btnSyncNow" title="Sync today's figures from Tally now">Sync now</button>
     </span>
+    <button class="ctrl-btn" id="btnAsk" title="Ask a question about your figures">✨ Ask</button>
     <button class="ctrl-btn" id="btnUsers" style="display:none" title="Add staff logins, reset passwords, remove access">Users</button>
     <span class="logout-link" id="logoutLink">Log out</span>
   </div>
@@ -745,6 +781,27 @@
     <button type="button" class="login-btn" id="unlockBtn">Unlock with <span class="lock-name">Face ID</span></button>
     <div class="login-error" id="unlockError"></div>
     <span class="lock-alt" id="unlockWithPassword">Sign in with password instead</span>
+  </div>
+</div>
+
+<div id="askOverlay" class="users-overlay ask-overlay" hidden>
+  <div class="ask-box" role="dialog" aria-label="Ask your data">
+    <div class="ask-head"><h2>Ask your data<small>Answers from your Tally data on this dashboard</small></h2><button type="button" class="gr-close" id="askClose">✕ Close</button></div>
+    <div class="ask-log" id="askLog">
+      <p class="ask-hello">Ask in English, Hindi or Hinglish. For example:</p>
+      <div class="ask-chips" id="askChips">
+        <button type="button">Which customers owe more than 1 lakh for over 90 days?</button>
+        <button type="button">Compare this month's sales with last month</button>
+        <button type="button">What did we sell to Voltamp this year?</button>
+        <button type="button">Which items haven't sold in 3 months?</button>
+        <button type="button">Ingram ko kitna payment baaki hai?</button>
+      </div>
+    </div>
+    <form class="ask-form" id="askForm" autocomplete="off">
+      <textarea id="askInput" rows="1" maxlength="500" placeholder="Type your question…" enterkeyhint="send" aria-label="Your question"></textarea>
+      <button type="submit" class="ctrl-btn lock-on" id="askSend">Ask</button>
+    </form>
+    <div class="ask-foot">Every figure is worked out from Tally on this page; the AI only words the answer. This financial year only.</div>
   </div>
 </div>
 
@@ -1483,12 +1540,13 @@ function gsLoadYear(){
   const dates = [];
   for (let d = fyStart; d <= today; d = addDaysIso(d, 1)) dates.push(d);
   gsYearLoading = Promise.all(dates.map(d => db.collection(COLLECTION).doc(d).get())).then(snaps => {
-    const rows = [];
+    const rows = [], books = {};
     let synced = 0;
     snaps.forEach((snap, i) => {
       if (!snap.exists) return;
       synced++;
       const day = withProformaApart(snap.data()), date = dates[i];
+      books[date] = booksOf(day);   // before-GST figures, for Ask (askBooks)
       for (const [key, kind] of [['sales', 'sale'], ['purchase', 'purchase']]){
         ((day[key] || {}).vouchers || []).forEach(v => rows.push({ ...v, kind, date }));
       }
@@ -1499,7 +1557,7 @@ function gsLoadYear(){
       }
     });
     rows.forEach(r => { r._t = gsNorm([r.party, r.description, r.type, r.voucher_no, r.ledger, r.date, isoToShort(r.date), gsAmt(r.amount)].join(' ')); });
-    gsYear = { rows, from: fyStart, to: today, days: dates.length, synced };
+    gsYear = { rows, books, from: fyStart, to: today, days: dates.length, synced };
     gsYearAt = Date.now();
     return gsYear;
   }).finally(() => { gsYearLoading = null; });
@@ -2674,6 +2732,458 @@ document.getElementById('usersAdd').addEventListener('submit', async (e) => {
 
 document.getElementById('noAccessLogout').addEventListener('click', () => auth.signOut());
 
+// ---------------------------------------------------------------------
+// Ask your data
+// ---------------------------------------------------------------------
+// A question in plain English, Hindi or Hinglish -- "which customers owe
+// more than 1 lakh for over 90 days?" -- answered from the same Tally data
+// the tiles show (the owner's request, 9 Oct 2026). The AI never reads the
+// database and never does sums: it picks one of the tools below, the tool
+// works the figures out here in the browser from what this login may read
+// (a staff login gets no P&L -- the database refuses it), and the AI words
+// the answer around the tool's own figures.
+//
+// The AI key can't sit in this page, where anyone could read it, so each
+// step goes through a small Google Apps Script (ask-backend/Code.gs) that
+// holds the key, checks the sign-in is the owner or an active staff login,
+// and passes the conversation to Claude. ASK_URL is that script's /exec
+// address; until it's set the box says Ask isn't switched on yet.
+const ASK_URL = '';
+const ASK_MAX_ROUNDS = 6;
+const ASK_RESULT_MAX = 14000;
+let askHistory = [], askBusy = false;
+
+const askIn = (iso, from, to) => (!from || iso >= from) && (!to || iso <= to);
+const askDays = (iso) => iso ? Math.round((new Date(todayISO() + 'T00:00:00') - new Date(iso + 'T00:00:00')) / 864e5) : null;
+const askMonthLabel = (iso) => new Date(iso.slice(0, 7) + '-01T00:00:00').toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
+const askLimit = (n, dflt) => Math.max(1, Math.min(Number(n) || dflt, 40));
+const askContra = (r) => /contra/i.test(r.type || '');
+
+// The range asked for, held to the financial year the dashboard has.
+function askRange(input, y){
+  let from = /^\d{4}-\d\d-\d\d$/.test(input.from || '') ? input.from : y.from;
+  let to = /^\d{4}-\d\d-\d\d$/.test(input.to || '') ? input.to : y.to;
+  const notes = [];
+  if (from < y.from){ notes.push('Only this financial year is on the dashboard, from ' + isoToShort(y.from) + '; earlier dates are not counted.'); from = y.from; }
+  if (to > y.to) to = y.to;
+  return { from, to, text: isoToShort(from) + ' to ' + isoToShort(to), notes };
+}
+
+// Party or item names that contain every word typed; failing that, any
+// name with one of its longer words -- "voltamp" finds
+// "Voltamp Transformers Ltd.".
+function askMatches(name, names){
+  const words = gsWords(name);
+  if (!words.length) return [];
+  let hit = names.filter(n => gsHit(words, gsNorm(n)));
+  if (!hit.length){
+    const long = words.filter(w => w.length >= 4);
+    hit = names.filter(n => long.some(w => gsNorm(n).includes(w)));
+  }
+  return [...new Set(hit)].slice(0, 8);
+}
+
+function askGroups(rows, keyOf, sortKey, limit, extra){
+  const m = new Map();
+  rows.forEach(r => {
+    const k = keyOf(r);
+    const g = m.get(k) || { key: k, amount: 0, count: 0, _sort: sortKey ? sortKey(r) : k };
+    g.amount += r.amount || 0; g.count++; m.set(k, g);
+  });
+  let groups = [...m.values()];
+  groups.sort((a, b) => extra === 'chrono' ? (a._sort < b._sort ? -1 : 1) : b.amount - a.amount);
+  const more = Math.max(groups.length - limit, 0);
+  groups = groups.slice(0, limit).map(g => ({ name: g.key, amount: Math.round(g.amount), amount_text: fmtINR(g.amount), entries: g.count }));
+  return { groups, more };
+}
+
+function askBooks(y, from, to, kind){
+  let total = 0, days = 0;
+  for (const [date, b] of Object.entries(y.books || {})){
+    if (b && askIn(date, from, to)){ total += kind === 'purchase' ? b.purchase_accounts : b.sales_accounts; days++; }
+  }
+  return days ? total : null;
+}
+
+const ASK_TOOLS = {
+  async sales_purchases(input){
+    const y = await gsLoadYear();
+    const kind = input.kind === 'purchases' ? 'purchase' : 'sale';
+    const all = y.rows.filter(r => r.kind === kind);
+    const out = { kind: kind === 'sale' ? 'sales' : 'purchases', notes: [] };
+    let parties = null, itemWords = null;
+    if (input.party){
+      parties = askMatches(input.party, [...new Set(all.map(r => r.party).filter(Boolean))]);
+      out.matched_parties = parties;
+      if (!parties.length) return { ...out, error: 'No ' + out.kind + ' to a party matching "' + input.party + '" this financial year.' };
+    }
+    if (input.item){
+      itemWords = gsWords(input.item);
+      out.notes.push('Item matched on the item names written on each bill; an amount is the whole bill, which can include other items.');
+    }
+    const pick = (from, to) => all.filter(r => askIn(r.date, from, to) && (!parties || parties.includes(r.party))
+                                            && (!itemWords || gsHit(itemWords, gsNorm(r.description))));
+    const sums = (from, to) => {
+      const rows = pick(from, to), withGst = rows.reduce((s, r) => s + (r.amount || 0), 0);
+      const before = parties || itemWords ? null : askBooks(y, from, to, kind);
+      return { rows, withGst, before };
+    };
+    const range = askRange(input, y);
+    out.period = range.text; out.notes.push(...range.notes);
+    const now = sums(range.from, range.to);
+    out.with_gst = Math.round(now.withGst); out.with_gst_text = fmtINR(now.withGst);
+    if (now.before != null){ out.before_gst = Math.round(now.before); out.before_gst_text = fmtINR(now.before); }
+    out.bills = now.rows.length;
+    const limit = askLimit(input.limit, 15);
+    if (input.group_by === 'month' || input.group_by === 'day' || input.group_by === 'party'){
+      const g = askGroups(now.rows, r => input.group_by === 'party' ? (r.party || '(no party)') : input.group_by === 'month' ? askMonthLabel(r.date) : isoToShort(r.date),
+        r => input.group_by === 'party' ? null : r.date, input.group_by === 'party' ? limit : 40, input.group_by === 'party' ? '' : 'chrono');
+      out.groups = g.groups; if (g.more) out.more_groups = g.more;
+      out.groups_are = 'with GST';
+      if (input.group_by === 'month' && now.before != null){
+        out.groups.forEach(gr => {
+          const first = now.rows.find(r => askMonthLabel(r.date) === gr.name).date.slice(0, 7);
+          const b = askBooks(y, first + '-01', first + '-31', kind);
+          if (b != null){ gr.before_gst = Math.round(b); gr.before_gst_text = fmtINR(b); }
+        });
+      }
+    }
+    if (parties || itemWords){
+      const rows = [...now.rows].sort((a, b) => (a.date < b.date ? 1 : -1));
+      out.bills_list = rows.slice(0, limit).map(r => ({ date: isoToShort(r.date), bill: r.voucher_no || '', party: r.party, with_gst_text: fmtINR(r.amount), what: (r.description || '').slice(0, 90) }));
+      if (rows.length > limit) out.more_bills = rows.length - limit;
+    }
+    if (input.compare_from && input.compare_to){
+      const c = askRange({ from: input.compare_from, to: input.compare_to }, y);
+      const then = sums(c.from, c.to);
+      const a = now.before != null && then.before != null ? [now.before, then.before, 'before GST'] : [now.withGst, then.withGst, 'with GST'];
+      out.compare = { period: c.text, with_gst_text: fmtINR(then.withGst), bills: then.rows.length, compared_on: a[2],
+        change_text: a[1] ? (a[0] >= a[1] ? 'up ' : 'down ') + Math.abs(Math.round((a[0] - a[1]) / a[1] * 100)) + '%' : 'no figure to compare with' };
+      if (then.before != null) out.compare.before_gst_text = fmtINR(then.before);
+      out.notes.push(...c.notes);
+    }
+    out.notes.push(out.before_gst_text ? 'Before GST is Tally\'s own ' + (kind === 'sale' ? 'Sales' : 'Purchase') + ' Accounts figure, as on the dashboard tile.' : 'Amounts are bill totals with GST.');
+    return out;
+  },
+
+  async receipts_payments(input){
+    const y = await gsLoadYear();
+    const want = input.direction === 'paid' ? ['out'] : input.direction === 'received' ? ['in'] : ['in', 'out'];
+    const range = askRange(input, y);
+    let rows = y.rows.filter(r => want.includes(r.kind) && !askContra(r) && askIn(r.date, range.from, range.to));
+    const out = { period: range.text, notes: [...range.notes, 'Transfers between your own bank and cash accounts (Contra) are left out.'] };
+    if (input.party){
+      const parties = askMatches(input.party, [...new Set(rows.map(r => r.party).filter(Boolean))]);
+      out.matched_parties = parties;
+      rows = rows.filter(r => parties.includes(r.party));
+    }
+    const limit = askLimit(input.limit, 15);
+    for (const k of want){
+      const part = rows.filter(r => r.kind === k), total = part.reduce((s, r) => s + (r.amount || 0), 0);
+      const key = k === 'in' ? 'received' : 'paid';
+      out[key] = { total_text: fmtINR(total), entries: part.length };
+      if (input.group_by === 'party' || input.group_by === 'month'){
+        const g = askGroups(part, r => input.group_by === 'party' ? (r.party || r.description || '(no party)') : askMonthLabel(r.date),
+          r => r.date, input.group_by === 'party' ? limit : 40, input.group_by === 'party' ? '' : 'chrono');
+        out[key].groups = g.groups; if (g.more) out[key].more_groups = g.more;
+      } else {
+        out[key].biggest = [...part].sort((a, b) => b.amount - a.amount).slice(0, Math.min(limit, 10))
+          .map(r => ({ date: isoToShort(r.date), party: r.party || r.description || '', amount_text: fmtINR(r.amount), via: r.via }));
+      }
+    }
+    return out;
+  },
+
+  async party(input){
+    const y = await gsLoadYear();
+    const deb = (shownParties.debtors || {}).parties || [], cred = (shownParties.creditors || {}).parties || [];
+    const debBills = deb.flatMap(r => (r.bills_list || []).map(b => ({ ...b, row: r })));
+    const names = [...new Set([...deb.map(r => r.name), ...cred.map(r => r.name), ...debBills.map(b => b.party), ...y.rows.map(r => r.party)].filter(Boolean))];
+    const hits = askMatches(input.name || '', names).slice(0, 4);
+    if (!hits.length) return { error: 'No party matching "' + (input.name || '') + '" on the dashboard.' };
+    const sum = (rows) => rows.reduce((s, r) => s + (r.amount || 0), 0);
+    const last = (rows) => rows.reduce((m, r) => (!m || r.date > m.date ? r : m), null);
+    return { parties: hits.map(name => {
+      const p = { name };
+      const d = deb.find(r => r.name === name), bills = debBills.filter(b => b.party === name);
+      if (d || bills.length){
+        const owed = bills.length ? bills : [];
+        p.owes_us = { balance_text: d ? fmtINR(d.amount) : fmtINR(sum(owed)), under_group: d ? undefined : (owed[0] && owed[0].row.name),
+          oldest_bill_days: owed.length ? Math.max(...owed.map(b => askDays(b.date))) : (d && d.days),
+          pending_bills: owed.slice(0, 12).map(b => ({ bill: b.ref, date: isoToShort(b.date), days: askDays(b.date), amount_text: fmtINR(b.amount), what: (b.description || '').slice(0, 80) })) };
+        if (owed.length > 12) p.owes_us.more_bills = owed.length - 12;
+      }
+      const c = cred.find(r => r.name === name);
+      if (c) p.we_owe = { balance_text: fmtINR(c.amount), oldest_bill_days: c.days ?? null };
+      for (const [kind, key] of [['sale', 'sales_this_year'], ['purchase', 'purchases_this_year'], ['in', 'received_this_year'], ['out', 'paid_this_year']]){
+        const rows = y.rows.filter(r => r.kind === kind && r.party === name && !askContra(r));
+        if (!rows.length) continue;
+        const l = last(rows);
+        p[key] = { total_text: fmtINR(sum(rows)), entries: rows.length, last: isoToShort(l.date) + ', ' + fmtINR(l.amount) };
+      }
+      return p;
+    }), notes: ['Sales and purchases here are bill totals with GST, this financial year.'] };
+  },
+
+  async debtors(input){
+    const rows = (shownParties.debtors || {}).parties;
+    if (!rows) return { error: 'The debtors haven\'t loaded yet.' };
+    const minDays = Number(input.min_days) || 0, minAmount = Number(input.min_amount) || 0, limit = askLimit(input.limit, 15);
+    const list = rows.filter(r => (r.amount || 0) > 0.5).map(r => {
+      const bills = r.bills_list || [];
+      const late = bills.filter(b => askDays(b.date) >= minDays);
+      const lateAmt = bills.length ? sum_(late) : (minDays ? null : r.amount);
+      return { name: r.name, group: r.group, balance: r.amount, late: lateAmt, oldest: bills.length ? Math.max(...bills.map(b => askDays(b.date))) : (r.days ?? null), bills: late.length };
+    }).filter(r => minDays ? (r.late != null ? r.late >= Math.max(minAmount, 0.5) : (r.oldest ?? -1) >= minDays && r.balance >= minAmount)
+                           : r.balance >= minAmount);
+    list.sort((a, b) => input.sort === 'days' ? (b.oldest ?? -1) - (a.oldest ?? -1) : (b.late ?? b.balance) - (a.late ?? a.balance));
+    const total = list.reduce((s, r) => s + (minDays ? (r.late ?? r.balance) : r.balance), 0);
+    return { count: list.length, total_text: fmtINR(total), total_is: minDays ? 'bills ' + minDays + '+ days old' : 'whole balance',
+      debtors: list.slice(0, limit).map(r => ({ name: r.name, balance_text: fmtINR(r.balance),
+        ...(minDays ? { overdue_text: r.late != null ? fmtINR(r.late) : 'bills not known', overdue_bills: r.bills } : {}),
+        oldest_bill_days: r.oldest })), more: Math.max(list.length - limit, 0),
+      notes: ['From Tally\'s Sundry Debtors and Bills Receivable, as on the Debtors tile.'] };
+  },
+
+  async creditors(input){
+    const rows = (shownParties.creditors || {}).parties;
+    if (!rows) return { error: 'The creditors haven\'t loaded yet.' };
+    const minAmount = Number(input.min_amount) || 0, limit = askLimit(input.limit, 15);
+    const list = rows.filter(r => (r.amount || 0) >= Math.max(minAmount, 0.5)).sort((a, b) => b.amount - a.amount);
+    return { count: list.length, total_text: fmtINR(list.reduce((s, r) => s + r.amount, 0)),
+      creditors: list.slice(0, limit).map(r => ({ name: r.name, balance_text: fmtINR(r.amount), oldest_bill_days: r.days ?? null })),
+      more: Math.max(list.length - limit, 0), notes: ['What you owe suppliers, from Tally\'s Sundry Creditors, as on the Creditors tile.'] };
+  },
+
+  async stock(input){
+    if (!shownStock || !shownStock.items) return { error: 'The stock hasn\'t loaded yet.' };
+    const limit = askLimit(input.limit, 15), days = Number(input.days) || 90;
+    let items = shownStock.items.filter(r => !isNilStock(r));
+    const notes = [];
+    if (input.name){ const w = gsWords(input.name); items = items.filter(r => gsHit(w, gsNorm(r.name))); }
+    if (input.filter === 'below_zero') items = items.filter(r => (r.value || 0) < -0.5 || stockQty(r) < 0);
+    else items = items.filter(r => !((r.value || 0) < -0.5 || stockQty(r) < 0) || input.filter === 'all');
+    if (input.filter === 'older_than') items = items.filter(r => (r.age_days ?? -1) >= days);
+    if (input.filter === 'not_sold'){
+      const y = await gsLoadYear();
+      const since = addDaysIso(todayISO(), -days);
+      const sold = y.rows.filter(r => r.kind === 'sale' && r.date >= since).map(r => gsNorm(r.description)).join(' | ');
+      items = items.filter(r => stockQty(r) > 0 && (r.age_days == null || r.age_days >= days) && !sold.includes(gsNorm(r.name)));
+      notes.push('An item counts as sold when its name is on a sales bill in the last ' + days + ' days' + (since < y.from ? ' (this financial year only)' : '') + '.');
+    }
+    items.sort((a, b) => input.filter === 'older_than' ? (b.age_days ?? 0) - (a.age_days ?? 0) : (b.value || 0) - (a.value || 0));
+    const total = items.reduce((s, r) => s + (r.value || 0), 0);
+    return { count: items.length, value_text: fmtINR(total), as_of: shownStock.as_of ? isoToShort(toISO(new Date(shownStock.as_of))) : undefined,
+      items: items.slice(0, limit).map(r => ({ name: r.name, qty: r.qty_text, value_text: fmtINR(r.value),
+        in_stock_days: r.age_days != null ? (r.from_opening ? r.age_days + '+' : r.age_days) : undefined })),
+      more: Math.max(items.length - limit, 0), notes: [...notes, 'From Tally\'s Stock Summary, as on the Stock tile.'] };
+  },
+
+  async pending(input){
+    const isChallan = input.what !== 'proformas';
+    let rows = isChallan ? shownChallans : shownProformas;
+    const minDays = Number(input.min_days) || 0, limit = askLimit(input.limit, 15);
+    if (input.party){ const w = gsWords(input.party); rows = rows.filter(r => gsHit(w, gsNorm(r.party))); }
+    rows = rows.filter(r => (askDays(r.date) ?? 0) >= minDays).sort((a, b) => (a.date < b.date ? -1 : 1));
+    return { what: isChallan ? 'delivery challans not yet billed' : 'proforma invoices pending', count: rows.length,
+      ...(isChallan ? {} : { value_text: fmtINR(rows.reduce((s, r) => s + (r.amount || 0), 0)) }),
+      list: rows.slice(0, limit).map(r => ({ date: isoToShort(r.date), days: askDays(r.date), party: r.party, no: r.voucher_no,
+        ...(isChallan ? {} : { amount_text: fmtINR(r.amount) }), what: (r.description || '').slice(0, 80) })),
+      more: Math.max(rows.length - limit, 0) };
+  },
+
+  async profit_and_loss(input){
+    if (!access.pl) return { error: 'This login can\'t see Profit & Loss.' };
+    const period = ['monthly', 'quarterly', 'half_yearly', 'yearly'].includes(input.period) ? input.period : 'monthly';
+    const date = /^\d{4}-\d\d-\d\d$/.test(input.date || '') ? input.date : todayISO();
+    const [start, end] = periodBoundsIso(period, date);
+    const snap = await db.collection(PERIOD_COLLECTION).doc(period + '_' + start).get();
+    if (!snap.exists) return { error: 'No P&L synced from Tally for ' + isoToShort(start) + ' to ' + isoToShort(end) + '.' };
+    const r = snap.data(), pl = r.profit_and_loss || {};
+    if (pl.net_profit_loss == null) return { error: 'Tally\'s P&L for that period could not be read clearly.' };
+    const t = (k) => pl[k] != null ? fmtINR(pl[k]) : undefined;
+    return { period: isoToShort(start) + ' to ' + isoToShort(r.complete ? end : r.to), complete: !!r.complete,
+      net_profit_text: t('net_profit_loss'), is_loss: pl.net_profit_loss < 0, sales_accounts_text: t('sales_accounts'),
+      purchase_accounts_text: t('purchase_accounts'), total_income_text: t('total_income'), total_expense_text: t('total_expense'),
+      opening_stock_text: t('opening_stock'), closing_stock_text: t('closing_stock'), notes: ['Tally\'s own Profit & Loss for the period.'] };
+  },
+};
+const sum_ = (rows) => rows.reduce((s, r) => s + (r.amount || 0), 0);
+
+// What the AI is told it can call. Dates are YYYY-MM-DD.
+const ASK_DATE = { type: 'string', description: 'YYYY-MM-DD' };
+const ASK_TOOL_DEFS = [
+  { name: 'sales_purchases', description: 'Sales or purchases in a date range: totals before GST (Tally\'s Sales/Purchase Accounts) and with GST, number of bills, optionally for one party or item, grouped by month, day or party, and compared with another range (gives the % change).',
+    input_schema: { type: 'object', properties: { kind: { type: 'string', enum: ['sales', 'purchases'] }, from: ASK_DATE, to: ASK_DATE,
+      party: { type: 'string', description: 'part of a customer or supplier name' }, item: { type: 'string', description: 'part of an item name' },
+      group_by: { type: 'string', enum: ['none', 'month', 'day', 'party'] }, compare_from: ASK_DATE, compare_to: ASK_DATE, limit: { type: 'integer' } }, required: ['kind'] } },
+  { name: 'receipts_payments', description: 'Money received from parties and paid out, by bank and cash, in a date range; optionally for one party; grouped by party or month, or the biggest entries.',
+    input_schema: { type: 'object', properties: { direction: { type: 'string', enum: ['received', 'paid', 'both'] }, from: ASK_DATE, to: ASK_DATE,
+      party: { type: 'string' }, group_by: { type: 'string', enum: ['none', 'party', 'month'] }, limit: { type: 'integer' } }, required: ['direction'] } },
+  { name: 'party', description: 'Everything about one customer or supplier: what they owe us (pending bills with age), what we owe them, and this year\'s sales, purchases, receipts and payments with them.',
+    input_schema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
+  { name: 'debtors', description: 'Customers who owe us, now. min_days keeps only bills at least that old and min_amount then applies to those bills\' total; sort by amount or by days.',
+    input_schema: { type: 'object', properties: { min_amount: { type: 'number', description: 'rupees' }, min_days: { type: 'integer' }, sort: { type: 'string', enum: ['amount', 'days'] }, limit: { type: 'integer' } } } },
+  { name: 'creditors', description: 'Suppliers we owe, now, biggest first, with the age of the oldest bill.',
+    input_schema: { type: 'object', properties: { min_amount: { type: 'number' }, limit: { type: 'integer' } } } },
+  { name: 'stock', description: 'Stock in hand now. filter: all, below_zero (negative stock), older_than (held at least `days` days), not_sold (in stock but not on any sales bill in the last `days` days). name narrows to matching items.',
+    input_schema: { type: 'object', properties: { filter: { type: 'string', enum: ['all', 'below_zero', 'older_than', 'not_sold'] }, days: { type: 'integer' }, name: { type: 'string' }, limit: { type: 'integer' } } } },
+  { name: 'pending', description: 'Delivery challans not yet billed, or proforma invoices pending, oldest first; optionally at least min_days old or for one party.',
+    input_schema: { type: 'object', properties: { what: { type: 'string', enum: ['challans', 'proformas'] }, min_days: { type: 'integer' }, party: { type: 'string' }, limit: { type: 'integer' } }, required: ['what'] } },
+  { name: 'profit_and_loss', description: 'Tally\'s own Profit & Loss for the month, quarter, half-year or financial year containing `date` (default today): net profit, sales and purchase accounts, income, expenses, opening and closing stock.',
+    input_schema: { type: 'object', properties: { period: { type: 'string', enum: ['monthly', 'quarterly', 'half_yearly', 'yearly'] }, date: ASK_DATE } } },
+];
+
+function askSystem(){
+  const today = todayISO(), [fyStart] = periodBoundsIso('yearly', today);
+  return [
+    'You answer questions from the team at R. S. Infotech, an IT products and services business in India, about their own business, using tools that read their Tally accounts.',
+    `Today is ${today} (${new Date(today + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'long' })}). The financial year runs 1 April to 31 March; the data covers ${fyStart} to today only.`,
+    access.pl ? '' : 'This person cannot see Profit & Loss; if asked, say it is only for the owner.',
+    'Rules: every figure in your answer must be copied exactly from a tool result -- use the *_text fields as written. Never add up, subtract, round or estimate figures yourself; if you need a total or a comparison, call a tool that returns it (sales_purchases has compare_from/compare_to). If the tools cannot answer, say so plainly and say what they can answer.',
+    'Say whether an amount is before or with GST when the tool says so. Mention a tool note only when it changes the meaning.',
+    'Answer in the language of the question (English, Hindi or Hinglish). Be brief: one or two sentences, then at most one short list or table (up to 15 rows). Markdown: **bold**, "- " lists, | tables |. No headings.',
+  ].filter(Boolean).join('\n');
+}
+
+const ASK_STEP_TEXT = { sales_purchases: 'Adding up the bills…', receipts_payments: 'Going through receipts and payments…', party: 'Looking up the party…',
+  debtors: 'Checking the debtors…', creditors: 'Checking the creditors…', stock: 'Checking the stock…', pending: 'Checking pending challans and proformas…',
+  profit_and_loss: 'Reading Tally\'s P&L…' };
+
+async function askTool(name, input){
+  const fn = ASK_TOOLS[name];
+  if (!fn) return JSON.stringify({ error: 'No such tool.' });
+  let out;
+  try { out = await fn(input || {}); } catch (e){ console.error(e); out = { error: 'Could not read that: ' + (e.message || e) }; }
+  let text = JSON.stringify(out);
+  if (text.length > ASK_RESULT_MAX) text = text.slice(0, ASK_RESULT_MAX) + ' …(cut short: ask for fewer rows)';
+  return text;
+}
+
+// One step of the conversation through the Apps Script; replaced in the
+// screenshot harness.
+async function askModel(messages){
+  if (!ASK_URL) throw new Error('Ask isn\'t switched on yet — its AI key still has to be set up.');
+  const idToken = await auth.currentUser.getIdToken();
+  let res;
+  try {
+    res = await fetch(ASK_URL, { method: 'POST', body: JSON.stringify({ idToken, system: askSystem(), tools: ASK_TOOL_DEFS, messages }) });
+  } catch (e){ throw new Error('Could not reach the assistant — check the internet connection.'); }
+  const out = await res.json().catch(() => ({ ok: false, error: 'The assistant sent back something unreadable.' }));
+  if (!out.ok) throw new Error(out.error || 'The assistant could not answer.');
+  return out.message;
+}
+
+async function askRun(question, onStep){
+  const messages = [...askHistory.slice(-8), { role: 'user', content: question }];
+  const used = new Set();
+  for (let round = 0; round < ASK_MAX_ROUNDS; round++){
+    const reply = await askModel(messages);
+    const content = reply.content || [];
+    messages.push({ role: 'assistant', content });
+    const calls = content.filter(b => b.type === 'tool_use');
+    if (!calls.length){
+      const text = content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim() || 'No answer came back — try asking another way.';
+      askHistory.push({ role: 'user', content: question }, { role: 'assistant', content: text });
+      return { text, used: [...used] };
+    }
+    const results = [];
+    for (const c of calls){
+      used.add(c.name);
+      onStep(ASK_STEP_TEXT[c.name] || 'Working it out…');
+      results.push({ type: 'tool_result', tool_use_id: c.id, content: await askTool(c.name, c.input) });
+    }
+    messages.push({ role: 'user', content: results });
+  }
+  throw new Error('That needed too many steps — try asking it more simply.');
+}
+
+// The little Markdown the answers use: paragraphs, **bold**, lists and
+// pipe tables. Escaped first, so nothing in an answer can become markup.
+function askMd(text){
+  const inline = (s) => escapeHtml(s).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+  const isNum = (s) => /^[-–]?\s*₹?\s*[\d,]+(\.\d+)?\s*(%|days?|\+)?$/.test(s.trim());
+  const lines = String(text).split('\n'), out = [];
+  for (let i = 0; i < lines.length; i++){
+    const line = lines[i].trim();
+    if (!line) continue;
+    if (line.startsWith('|')){
+      const rows = [];
+      while (i < lines.length && lines[i].trim().startsWith('|')){ rows.push(lines[i].trim()); i++; }
+      i--;
+      const cells = rows.filter(r => !/^\|[\s:|-]+\|$/.test(r)).map(r => r.replace(/^\||\|$/g, '').split('|').map(c => c.trim()));
+      if (!cells.length) continue;
+      const [head, ...body] = cells;
+      const numCol = head.map((_, j) => body.length && body.every(r => !r[j] || isNum(r[j])));
+      out.push('<table><thead><tr>' + head.map((c, j) => `<th${numCol[j] ? ' class="num"' : ''}>${inline(c)}</th>`).join('') + '</tr></thead><tbody>' +
+        body.map(r => '<tr>' + head.map((_, j) => `<td${numCol[j] ? ' class="num"' : ''}>${inline(r[j] || '')}</td>`).join('') + '</tr>').join('') + '</tbody></table>');
+    } else if (/^([-*•]|\d+\.)\s+/.test(line)){
+      const ordered = /^\d+\./.test(line), items = [];
+      while (i < lines.length && /^([-*•]|\d+\.)\s+/.test(lines[i].trim())){ items.push(lines[i].trim().replace(/^([-*•]|\d+\.)\s+/, '')); i++; }
+      i--;
+      out.push(`<${ordered ? 'ol' : 'ul'}>` + items.map(t => '<li>' + inline(t) + '</li>').join('') + `</${ordered ? 'ol' : 'ul'}>`);
+    } else {
+      out.push('<p>' + inline(line.replace(/^#+\s*/, '')) + '</p>');
+    }
+  }
+  return out.join('');
+}
+
+const ASK_SOURCES = { sales_purchases: 'sales & purchase bills', receipts_payments: 'bank & cash entries', party: 'party balances & bills',
+  debtors: 'Debtors', creditors: 'Creditors', stock: 'Stock Summary', pending: 'pending challans & proformas', profit_and_loss: 'Tally P&L' };
+
+function askAdd(cls, html){
+  const log = document.getElementById('askLog');
+  const el = document.createElement('div');
+  el.className = 'ask-msg ' + cls;
+  el.innerHTML = html;
+  log.appendChild(el);
+  log.scrollTop = log.scrollHeight;
+  return el;
+}
+
+async function askSubmit(question){
+  question = (question || '').trim();
+  if (!question || askBusy) return;
+  askBusy = true;
+  document.getElementById('askSend').disabled = true;
+  document.getElementById('askInput').value = '';
+  askAdd('q', escapeHtml(question));
+  const busy = askAdd('a busy', 'Reading the question…');
+  try {
+    const { text, used } = await askRun(question, (step) => { busy.textContent = step; });
+    busy.className = 'ask-msg a';
+    busy.innerHTML = askMd(text) + (used.length ? `<div class="src">From Tally: ${escapeHtml(used.map(u => ASK_SOURCES[u] || u).join(', '))}</div>` : '');
+  } catch (e){
+    console.error(e);
+    busy.className = 'ask-msg a err';
+    busy.textContent = e.message || String(e);
+  } finally {
+    askBusy = false;
+    document.getElementById('askSend').disabled = false;
+    document.getElementById('askLog').scrollTop = document.getElementById('askLog').scrollHeight;
+  }
+}
+
+function openAsk(){
+  document.getElementById('askOverlay').hidden = false;
+  document.body.style.overflow = 'hidden';
+  gsLoadYear().catch(() => {});   // start reading the year while they type
+  setTimeout(() => document.getElementById('askInput').focus(), 50);
+}
+function closeAsk(){
+  document.getElementById('askOverlay').hidden = true;
+  document.body.style.overflow = '';
+}
+document.getElementById('btnAsk').addEventListener('click', openAsk);
+document.getElementById('askClose').addEventListener('click', closeAsk);
+document.getElementById('askOverlay').addEventListener('click', (e) => { if (e.target.id === 'askOverlay') closeAsk(); });
+document.getElementById('askChips').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) askSubmit(b.textContent); });
+document.getElementById('askForm').addEventListener('submit', (e) => { e.preventDefault(); askSubmit(document.getElementById('askInput').value); });
+document.getElementById('askInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); askSubmit(e.target.value); }
+});
+
 // Works out what the signed-in person may see before anything is drawn,
 // and keeps watching: a staff login that's removed while open is signed
 // out at once, and a P&L tick shows or hides the tile straight away.
@@ -2731,6 +3241,8 @@ auth.onAuthStateChanged(async (user) => {
     access = { owner: false, pl: false, uid: null };
     if (accessUnsubscribe){ accessUnsubscribe(); accessUnsubscribe = null; }
     closeUsers();
+    closeAsk();
+    askHistory = [];
     showScreen('login');
     detachLiveListener();
     detachChallanListener();
