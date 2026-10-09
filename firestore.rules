@@ -1,0 +1,48 @@
+rules_version = '2';
+
+// Who may read what on the R. S. Infotech dashboard. Pasted into the
+// Firebase console (Firestore Database > Rules > Publish); kept here so the
+// rules in force can always be compared with what the dashboard expects.
+//
+// The Tally sync and the report emails use a service account, which these
+// rules don't apply to. In the browser:
+//  - the owner reads everything and manages the logins (users);
+//  - a staff login is a users/{uid} document the owner made on the Users
+//    page, with active == true. Staff read everything except Profit & Loss,
+//    unless the owner ticked "Can see P&L" (pl == true);
+//  - any other login -- including one someone made for themselves -- reads
+//    nothing.
+// A day's P&L lives in daily_pl and a period's in period_reports under
+// weekly_ / monthly_ / quarterly_ / half_yearly_ / yearly_ ids, so they can
+// be refused on their own (sync_tally.py, PL_COLLECTION).
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isOwner() { return signedIn() && request.auth.token.email == 'rasesh3375@gmail.com'; }
+    function memberDoc() { return /databases/$(database)/documents/users/$(request.auth.uid); }
+    function isStaff() { return signedIn() && exists(memberDoc()) && get(memberDoc()).data.active == true; }
+    function canRead() { return isOwner() || isStaff(); }
+    function canSeePL() { return isOwner() || (isStaff() && get(memberDoc()).data.pl == true); }
+    function isPLDoc(id) { return id.matches('(weekly|monthly|quarterly|half_yearly|yearly)_[0-9-]+'); }
+
+    match /daily_reports/{day} { allow read: if canRead(); }
+    match /daily_pl/{day} { allow read: if canSeePL(); }
+    match /delivery_challans/{id} { allow read: if canRead(); }
+    match /period_reports/{id} {
+      allow read: if (isPLDoc(id) && canSeePL()) || (!isPLDoc(id) && canRead());
+    }
+    match /sync_control/{id} {
+      allow read: if canRead();
+      // The Sync now button: the one document the browser writes.
+      allow write: if id == 'request' && canRead()
+        && request.resource.data.keys().hasOnly(['request_id', 'requested_at', 'requested_by']);
+    }
+    match /users/{uid} {
+      allow read: if isOwner() || (signedIn() && request.auth.uid == uid);
+      allow create, delete: if isOwner();
+      allow update: if isOwner()
+        || (signedIn() && request.auth.uid == uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['last_seen']));
+    }
+  }
+}

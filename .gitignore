@@ -13,3 +13,4 @@ tally-sync/tally_test_output/
 tally-sync/balances_paused_until.txt
 tally-sync/party_balances_at.txt
 tally-sync/serials_fetch.txt
+tally-sync/pl_moved.txt

@@ -1134,9 +1134,68 @@ def push_period_report(doc_id, doc):
     _firestore_db().collection(PERIOD_COLLECTION).document(doc_id).set(doc)
 
 
+# A day's Profit & Loss is kept apart from the rest of the day, in a
+# collection of its own: on 9 Oct 2026 the owner asked for staff logins that
+# see everything except P&L, and the database can only allow or refuse a
+# whole document, not a field of one. The day's document keeps "books" --
+# Tally's Sales and Purchase Accounts, the before-GST figures the Sales and
+# Purchase tiles show -- which staff do see.
+PL_COLLECTION = "daily_pl"
+PL_MOVED_FILE = "pl_moved.txt"
+
+
+def _split_pl(payload):
+    """(the day without its P&L, the P&L) -- see PL_COLLECTION."""
+    pl = payload.get("profit_and_loss")
+    day = {k: v for k, v in payload.items() if k != "profit_and_loss"}
+    if isinstance(pl, dict) and isinstance(pl.get("sales_accounts"), (int, float)):
+        day["books"] = {"sales_accounts": pl["sales_accounts"], "purchase_accounts": pl.get("purchase_accounts") or 0}
+    return day, pl
+
+
 def push_to_firestore(date_iso, payload):
     db = _firestore_db()
-    db.collection(FIRESTORE_COLLECTION).document(date_iso).set(payload)
+    day, pl = _split_pl(payload)
+    if pl is not None:
+        db.collection(PL_COLLECTION).document(date_iso).set(
+            {"date": date_iso, "synced_at": payload.get("synced_at"), "profit_and_loss": pl})
+    db.collection(FIRESTORE_COLLECTION).document(date_iso).set(day)
+
+
+def _move_pl_out_of_daily_reports():
+    """Once on each PC (PL_MOVED_FILE): every daily_reports document written
+    before PL_COLLECTION existed still holds its day's P&L, which staff
+    could read. Each one's P&L is copied to PL_COLLECTION and taken off it,
+    in batches, and sync_control/status notes when it was done -- the
+    dashboard's Users page waits for that before it lets staff be added.
+    Harmless to repeat: a document with no P&L left is skipped."""
+    from firebase_admin import firestore
+    marker = os.path.join(SCRIPT_DIR, PL_MOVED_FILE)
+    if os.path.exists(marker):
+        return
+    db = _firestore_db()
+    batch, pending, moved = db.batch(), 0, 0
+    for snap in db.collection(FIRESTORE_COLLECTION).stream():
+        doc = snap.to_dict() or {}
+        if "profit_and_loss" not in doc:
+            continue
+        day, pl = _split_pl(doc)
+        batch.set(db.collection(PL_COLLECTION).document(snap.id),
+                  {"date": snap.id, "synced_at": doc.get("synced_at"), "profit_and_loss": pl})
+        update = {"profit_and_loss": firestore.DELETE_FIELD}
+        if "books" in day:
+            update["books"] = day["books"]
+        batch.update(snap.reference, update)
+        pending, moved = pending + 2, moved + 1
+        if pending >= 400:
+            batch.commit()
+            batch, pending = db.batch(), 0
+    if pending:
+        batch.commit()
+    db.collection(SYNC_CONTROL_COLLECTION).document("status").set({"pl_split_at": _utc_now().isoformat()}, merge=True)
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write(_utc_now().isoformat())
+    log.info("P&L moved out of %d daily documents into %s.", moved, PL_COLLECTION)
 
 
 def push_party_balances(balances):
@@ -2830,6 +2889,11 @@ def main():
         log.error("Sync failed: %s", e, exc_info=args.verbose)
         _record_result(False, f"Sync failed: {e}", args.dry_run)
         sys.exit(1)
+    if not args.dry_run:
+        try:
+            _move_pl_out_of_daily_reports()
+        except Exception as e:
+            log.warning("P&L not moved out of the daily documents yet -- %s", e)
     _record_result(True, "", args.dry_run)
 
 

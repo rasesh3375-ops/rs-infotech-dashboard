@@ -145,6 +145,42 @@
     font:inherit; font-size:13.5px; color:var(--text); text-align:left; cursor:pointer; }
   .gsearch-suggest button:hover, .gsearch-suggest button.active{ background:rgba(20,83,154,0.07); }
   .gsearch-suggest small{ color:var(--text-dim); white-space:nowrap; }
+  /* Users page (owner only). */
+  .users-overlay{ position:fixed; inset:0; z-index:50; background:rgba(17,17,17,0.35); overflow-y:auto; padding:24px 12px; }
+  .users-overlay[hidden]{ display:none; }
+  .users-box{ background:var(--panel); border-radius:14px; max-width:760px; margin:0 auto; padding:18px 20px 20px; box-shadow:0 12px 40px rgba(17,17,17,0.25); }
+  .users-head{ display:flex; justify-content:space-between; align-items:center; }
+  .users-head h2{ margin:0; font-size:20px; }
+  .users-note{ color:var(--text-dim); font-size:12.5px; margin:6px 0 10px; }
+  .users-warn{ background:#fff4e5; border:1px solid #f0c27a; color:#7a4b00; border-radius:8px; padding:8px 10px; font-size:13px; margin:0 0 10px; }
+  .users-warn[hidden]{ display:none; }
+  .users-table{ width:100%; border-collapse:collapse; font-size:13.5px; }
+  .users-table th{ text-align:left; font-size:11.5px; text-transform:uppercase; letter-spacing:.3px; color:var(--text-dim); padding:6px 6px; border-bottom:1px solid var(--panel-edge); }
+  .users-table td{ padding:8px 6px; border-bottom:1px solid rgba(17,17,17,0.06); vertical-align:top; }
+  .users-table .em{ color:var(--text-dim); font-size:12px; }
+  .users-table .off{ color:var(--red); font-weight:600; }
+  .users-acts{ display:flex; flex-wrap:wrap; gap:6px; justify-content:flex-end; }
+  .users-acts button{ font:inherit; font-size:12px; padding:4px 8px; border-radius:6px; border:1px solid var(--panel-edge); background:var(--bg); color:var(--text); cursor:pointer; }
+  .users-acts button.danger{ color:var(--red); }
+  .users-add{ margin-top:16px; border-top:1px solid var(--panel-edge); padding-top:12px; }
+  .users-add h3{ margin:0 0 8px; font-size:15px; }
+  .users-fields{ display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:8px; }
+  .users-fields label{ display:flex; flex-direction:column; font-size:12px; color:var(--text-dim); gap:3px; }
+  .users-fields input{ font:inherit; font-size:14px; padding:7px 9px; border:1px solid var(--panel-edge); border-radius:8px; background:var(--bg); color:var(--text); }
+  .users-check{ display:inline-flex; gap:6px; align-items:center; font-size:13.5px; margin:10px 0 0; }
+  .users-add-row{ display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap; }
+  .users-msg{ font-size:13px; }
+  .users-msg.err{ color:var(--red); }
+  .users-msg.ok{ color:#167a51; }
+  .users-hint{ color:var(--text-dim); font-size:12px; margin-top:8px; }
+  body.no-pl .pl-card{ display:none !important; }
+  @media (max-width: 640px){
+    .users-fields{ grid-template-columns:1fr; }
+    .users-table thead{ display:none; }
+    .users-table tr{ display:block; border-bottom:1px solid var(--panel-edge); padding:6px 0; }
+    .users-table td{ display:block; border:0; padding:3px 4px; }
+    .users-acts{ justify-content:flex-start; }
+  }
   .gresults{ background:var(--panel); border:1px solid var(--panel-edge); border-radius:14px; padding:12px 16px 14px; margin:0 0 10px;
     box-shadow:0 1px 3px rgba(17,17,17,0.06); }
   .gresults[hidden]{ display:none; }
@@ -223,7 +259,7 @@
   .brand-bar{ height:6px; border-radius:3px; margin-bottom:8px; background:linear-gradient(90deg, var(--blue), var(--black)); }
   .footer-note{ margin-top:8px; font-size:12px; color:var(--text-dim); text-align:center; }
 
-  #loginScreen, #checkEmailScreen{ min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
+  #loginScreen, #checkEmailScreen, #noAccessScreen{ min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
   .login-card{
     background:var(--panel); border:1px solid var(--panel-edge); border-radius:16px;
     box-shadow:0 1px 3px rgba(17,17,17,0.06), 0 12px 32px rgba(17,17,17,0.08);
@@ -481,6 +517,14 @@
   </div>
 </div>
 
+<div id="noAccessScreen" style="display:none;">
+  <div class="login-card">
+    <h1>No access</h1>
+    <div class="login-sub" id="noAccessSub">This login hasn't been given access to the dashboard. Ask Rasesh to add you on the Users page.</div>
+    <button type="button" class="login-btn" id="noAccessLogout">Log out</button>
+  </div>
+</div>
+
 <div id="appContent">
 <div class="wrap">
   <div class="brand-bar"></div>
@@ -507,6 +551,7 @@
       </span>
       <button class="ctrl-btn" id="btnSyncNow" title="Sync today's figures from Tally now">Sync now</button>
     </span>
+    <button class="ctrl-btn" id="btnUsers" style="display:none" title="Add staff logins, reset passwords, remove access">Users</button>
     <span class="logout-link" id="logoutLink">Log out</span>
   </div>
   <div class="lock-offer" id="lockOffer">
@@ -703,6 +748,29 @@
   </div>
 </div>
 
+<div id="usersOverlay" class="users-overlay" hidden>
+  <div class="users-box" role="dialog" aria-label="Users">
+    <div class="users-head"><h2>Users</h2><button type="button" class="gr-close" id="usersClose">✕ Close</button></div>
+    <div class="users-note">Staff see everything except Profit &amp; Loss, unless you tick "Can see P&amp;L". The database itself refuses them what they aren't allowed — it isn't only hidden.</div>
+    <div class="users-warn" id="usersWarn" hidden></div>
+    <table class="users-table">
+      <thead><tr><th>Name</th><th>Access</th><th>Last opened</th><th></th></tr></thead>
+      <tbody id="usersBody"><tr><td colspan="4" class="empty-note">Loading…</td></tr></tbody>
+    </table>
+    <form class="users-add" id="usersAdd" autocomplete="off">
+      <h3>Add a login</h3>
+      <div class="users-fields">
+        <label>Name<input id="uaName" required maxlength="60" placeholder="e.g. Samarth Patel"></label>
+        <label>Email<input id="uaEmail" type="email" required placeholder="e.g. accounts@rsinfotech.net"></label>
+        <label>Password<input id="uaPassword" type="text" required minlength="8" placeholder="at least 8 characters"></label>
+      </div>
+      <label class="users-check"><input type="checkbox" id="uaPl"> Can see Profit &amp; Loss</label>
+      <div class="users-add-row"><button type="submit" class="ctrl-btn lock-on" id="uaSubmit">Add login</button><span class="users-msg" id="uaMsg"></span></div>
+      <div class="users-hint">Tell them the email and password yourself. They can change the password with "Forgot password?" on the sign-in screen.</div>
+    </form>
+  </div>
+</div>
+
 <div id="printReport"></div>
 
 <script>
@@ -720,6 +788,15 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
 const auth = firebase.auth();
+
+// Who is signed in and what they may see: the owner sees everything and
+// manages the logins; a staff login is a users/{uid} document the owner
+// made on the Users page -- everything but Profit & Loss unless "pl" is
+// ticked. The Firestore rules check the same document, so this decides
+// what's drawn, not what can be read.
+const OWNER_EMAIL = 'rasesh3375@gmail.com';
+const USERS_COLLECTION = 'users';
+let access = { owner: false, pl: false, uid: null };
 
 const COLLECTION = 'daily_reports';
 const CHALLAN_COLLECTION = 'delivery_challans';
@@ -874,7 +951,10 @@ function renderTiles(data, emptyWhat){
 // Tally's before-GST Sales Accounts and Purchase Accounts for a synced day,
 // from its P&L -- or nothing, for a day synced before they were stored.
 function booksOf(day){
-  const pl = day.profit_and_loss || {};
+  // Since 9 Oct 2026 the day carries them as "books", its P&L being kept
+  // apart for the owner (sync_tally.py, PL_COLLECTION); older days still
+  // have them inside profit_and_loss.
+  const pl = day.books || day.profit_and_loss || {};
   return typeof pl.sales_accounts === 'number'
     ? { sales_accounts: pl.sales_accounts, purchase_accounts: pl.purchase_accounts || 0 } : null;
 }
@@ -969,6 +1049,7 @@ function renderPlAmount(net, needsReview, reasonText){
 
 async function loadPlPeriod(period, token){
   const rangeLabelEl = document.getElementById('plRangeLabel');
+  if (!access.pl) return;   // a staff login: the tile is hidden and the database would refuse the read
 
   // On the Daily view the tile shows the month so far, not the day. One
   // day's profit swung wildly for reasons that had nothing to do with how
@@ -1755,7 +1836,7 @@ document.getElementById('btnSyncNow').addEventListener('click', () => {
 const SITE_URL = 'https://rs-infotech-dashboard.web.app';
 
 function shareSummaryRows(){
-  return [...document.querySelectorAll('.dash-grid > .card')].map(card => {
+  return [...document.querySelectorAll('.dash-grid > .card')].filter(card => getComputedStyle(card).display !== 'none').map(card => {
     const flag = card.querySelector('.review-flag');
     const note = (flag && flag.style.display !== 'none' && flag.textContent.trim()) ||
                  ((card.querySelector('.stat-sub') || card.querySelector('.pl-range-label') || {}).textContent || '').trim();
@@ -2195,6 +2276,7 @@ function showScreen(name){
   document.getElementById('loginScreen').style.display = name === 'login' ? 'flex' : 'none';
   document.getElementById('checkEmailScreen').style.display = name === 'checkEmail' ? 'flex' : 'none';
   document.getElementById('appContent').style.display = name === 'app' ? 'block' : 'none';
+  document.getElementById('noAccessScreen').style.display = name === 'noAccess' ? 'flex' : 'none';
 }
 
 function sendLinkAndShowCheckEmail(email, onDone){
@@ -2446,8 +2528,189 @@ document.addEventListener('visibilitychange', () => {
 
 const handlingEmailLink = completeEmailLinkSignInIfPresent();
 
-auth.onAuthStateChanged((user) => {
+// ---------------------------------------------------------------------
+// Users (owner only)
+// ---------------------------------------------------------------------
+// The owner adds staff logins here (9 Oct 2026). There's no server of our
+// own to do it -- that would need Firebase's paid plan -- so the login is
+// made from this page, through a second Firebase app instance so the owner
+// stays signed in, and its users/{uid} document is what gives it access.
+// The limits that come with that, agreed with the owner: a password can't
+// be set for someone else afterwards (they get a reset email instead), and
+// "Remove" takes the access away while the empty login stays in Firebase.
+// Keyed by uid, not email, so a login someone else made for the same
+// address can never pick up access.
+let usersUnsubscribe = null, accessUnsubscribe = null;
+const tsText = (t) => {
+  if (!t) return 'never';
+  const d = t.toDate ? t.toDate() : new Date(t);
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) + ', ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+};
+function usersMsg(text, kind){
+  const el = document.getElementById('uaMsg');
+  el.textContent = text || '';
+  el.className = 'users-msg' + (kind ? ' ' + kind : '');
+}
+function renderUsers(rows){
+  const body = document.getElementById('usersBody');
+  const own = `<tr><td><b>Rasesh Doshi</b> (you)<div class="em">${escapeHtml(OWNER_EMAIL)}</div></td><td>Owner · everything</td><td>–</td><td></td></tr>`;
+  body.innerHTML = own + rows.map(u => `<tr>
+      <td><b>${escapeHtml(u.name || '')}</b><div class="em">${escapeHtml(u.email || '')}</div></td>
+      <td>${u.active ? (u.pl ? 'Staff + P&amp;L' : 'Staff') : '<span class="off">Removed</span>'}</td>
+      <td>${escapeHtml(tsText(u.last_seen))}</td>
+      <td><div class="users-acts" data-uid="${gsAttr(u.id)}" data-email="${gsAttr(u.email || '')}">` +
+      (u.active
+        ? `<button type="button" data-act="pl">${u.pl ? 'Hide P&amp;L' : 'Show P&amp;L'}</button>` +
+          `<button type="button" data-act="reset">Send password reset</button>` +
+          `<button type="button" data-act="remove" class="danger">Remove</button>`
+        : `<button type="button" data-act="restore">Give access again</button>`) +
+      `</div></td></tr>`).join('');
+}
+function openUsers(){
+  document.getElementById('usersOverlay').hidden = false;
+  usersMsg('');
+  // Staff must not be added while old days still carry their P&L inside
+  // the day's own document: the Tally PC moves it out once, at its first
+  // sync with this version, and notes when (sync_tally.py).
+  const ready = syncStatus && syncStatus.pl_split_at;
+  const warn = document.getElementById('usersWarn');
+  warn.hidden = !!ready;
+  warn.textContent = ready ? '' : 'Not ready for staff yet: the Tally PC still has to move Profit & Loss out of the older daily records. That happens by itself at its next sync with the updated version — this message goes when it has.';
+  document.getElementById('uaSubmit').disabled = !ready;
+  if (usersUnsubscribe) usersUnsubscribe();
+  usersUnsubscribe = db.collection(USERS_COLLECTION).onSnapshot((snap) => {
+    const rows = [];
+    snap.forEach(d => rows.push({ id: d.id, ...d.data() }));
+    rows.sort((a, b) => (b.active === true) - (a.active === true) || (a.name || '').localeCompare(b.name || ''));
+    renderUsers(rows);
+  }, (e) => {
+    console.error(e);
+    document.getElementById('usersBody').innerHTML = '<tr><td colspan="4" class="empty-note">Could not read the users — the new database rules may not be published yet.</td></tr>';
+  });
+}
+function closeUsers(){
+  document.getElementById('usersOverlay').hidden = true;
+  if (usersUnsubscribe){ usersUnsubscribe(); usersUnsubscribe = null; }
+}
+document.getElementById('btnUsers').addEventListener('click', openUsers);
+document.getElementById('usersClose').addEventListener('click', closeUsers);
+document.getElementById('usersOverlay').addEventListener('click', (e) => { if (e.target.id === 'usersOverlay') closeUsers(); });
+
+document.getElementById('usersBody').addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const box = btn.closest('.users-acts'), uid = box.dataset.uid, email = box.dataset.email, act = btn.dataset.act;
+  const ref = db.collection(USERS_COLLECTION).doc(uid);
+  try {
+    if (act === 'reset'){
+      await auth.sendPasswordResetEmail(email);
+      usersMsg('Password reset email sent to ' + email + '.', 'ok');
+    } else if (act === 'remove'){
+      if (!window.confirm('Remove ' + email + "'s access? They'll be signed out and see nothing. You can give it back later.")) return;
+      await ref.update({ active: false, removed_at: firebase.firestore.FieldValue.serverTimestamp() });
+      usersMsg(email + ' no longer has access.', 'ok');
+    } else if (act === 'restore'){
+      await ref.update({ active: true });
+      usersMsg(email + ' has access again.', 'ok');
+    } else if (act === 'pl'){
+      const snap = await ref.get();
+      await ref.update({ pl: !(snap.data() || {}).pl });
+    }
+  } catch (err){
+    console.error(err);
+    usersMsg('Could not do that: ' + (err.message || err), 'err');
+  }
+});
+
+document.getElementById('usersAdd').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const name = document.getElementById('uaName').value.trim();
+  const email = document.getElementById('uaEmail').value.trim().toLowerCase();
+  const password = document.getElementById('uaPassword').value;
+  const pl = document.getElementById('uaPl').checked;
+  const btn = document.getElementById('uaSubmit');
+  if (password.length < 8){ usersMsg('The password needs at least 8 characters.', 'err'); return; }
+  if (email === OWNER_EMAIL){ usersMsg("That's your own login.", 'err'); return; }
+  btn.disabled = true;
+  usersMsg('Adding…');
+  const ref = db.collection(USERS_COLLECTION).doc();
+  try {
+    // The access document is checked first, so a login is never made that
+    // can't then be given access (the rules not published yet, say).
+    await ref.set({ check: true });
+    await ref.delete();
+  } catch (err){
+    console.error(err);
+    usersMsg('The new database rules aren\'t published yet — do step 2 of the setup first.', 'err');
+    btn.disabled = false;
+    return;
+  }
+  try {
+    const second = firebase.apps.find(a => a.name === 'userAdmin') || firebase.initializeApp(firebaseConfig, 'userAdmin');
+    await second.auth().setPersistence(firebase.auth.Auth.Persistence.NONE);
+    const cred = await second.auth().createUserWithEmailAndPassword(email, password);
+    const uid = cred.user.uid;
+    await second.auth().signOut();
+    await db.collection(USERS_COLLECTION).doc(uid).set({
+      name, email, pl, active: true,
+      created_at: firebase.firestore.FieldValue.serverTimestamp(), created_by: (auth.currentUser || {}).email || '',
+    });
+    usersMsg(name + ' can now sign in with ' + email + '.', 'ok');
+    document.getElementById('usersAdd').reset();
+  } catch (err){
+    console.error(err);
+    const code = err.code || '';
+    usersMsg(code === 'auth/email-already-in-use'
+        ? 'That email already has a login. Use another email — or, if it\'s a person you removed, press "Give access again" next to them.'
+      : code === 'auth/operation-not-allowed' || code === 'auth/admin-restricted-operation'
+        ? 'Firebase doesn\'t allow new logins yet — do step 1 of the setup first.'
+      : code === 'auth/invalid-email' ? 'That email address isn\'t valid.'
+      : code === 'auth/weak-password' ? 'Firebase says that password is too weak — try a longer one.'
+      : 'Could not add the login: ' + (err.message || err), 'err');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('noAccessLogout').addEventListener('click', () => auth.signOut());
+
+// Works out what the signed-in person may see before anything is drawn,
+// and keeps watching: a staff login that's removed while open is signed
+// out at once, and a P&L tick shows or hides the tile straight away.
+function resolveAccess(user){
+  if (accessUnsubscribe){ accessUnsubscribe(); accessUnsubscribe = null; }
+  if ((user.email || '').toLowerCase() === OWNER_EMAIL){
+    return Promise.resolve({ owner: true, pl: true, uid: user.uid });
+  }
+  return new Promise((resolve) => {
+    let first = true;
+    accessUnsubscribe = db.collection(USERS_COLLECTION).doc(user.uid).onSnapshot((doc) => {
+      const d = doc.exists ? doc.data() : null;
+      const a = { owner: false, pl: !!(d && d.active && d.pl), uid: user.uid, staff: !!(d && d.active), name: d && d.name };
+      if (first){ first = false; resolve(a); return; }
+      if (!a.staff){ auth.signOut(); return; }
+      access = a;
+      applyAccess();
+    }, (err) => { console.error(err); if (first){ first = false; resolve({ owner: false, pl: false, uid: user.uid, staff: false }); } });
+  });
+}
+function applyAccess(){
+  document.body.classList.toggle('no-pl', !access.pl);
+  document.getElementById('btnUsers').style.display = access.owner ? '' : 'none';
+  if (access.pl) loadPlPeriod(currentPeriod, viewToken);
+}
+
+auth.onAuthStateChanged(async (user) => {
   if (user){
+    access = await resolveAccess(user);
+    if (!access.owner && !access.staff){
+      showScreen('noAccess');
+      return;
+    }
+    if (!access.owner){
+      db.collection(USERS_COLLECTION).doc(user.uid).update({ last_seen: firebase.firestore.FieldValue.serverTimestamp() }).catch(() => {});
+    }
+    applyAccess();
     showScreen('app');
     startDeviceLock(user);
     currentAnchorDateIso = todayISO();
@@ -2465,6 +2728,9 @@ auth.onAuthStateChanged((user) => {
   } else if (window.localStorage.getItem(PENDING_EMAIL_KEY)) {
     showScreen('checkEmail');
   } else {
+    access = { owner: false, pl: false, uid: null };
+    if (accessUnsubscribe){ accessUnsubscribe(); accessUnsubscribe = null; }
+    closeUsers();
     showScreen('login');
     detachLiveListener();
     detachChallanListener();

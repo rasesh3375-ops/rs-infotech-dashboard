@@ -8,7 +8,8 @@
       ".github/**",
       "tally-sync/**",
       "raw/**",
-      "*.md"
+      "*.md",
+      "firestore.rules"
     ],
     "headers": [
       {

@@ -310,7 +310,10 @@ def _entries_report(report, key, books_key, title):
     x = report.get(key) or {}
     rows = x.get("vouchers") or []
     with_gst = sum(v.get("amount") or 0 for v in rows)
-    pl = report.get("profit_and_loss") or {}
+    # Since 9 Oct 2026 a day's P&L is kept apart (sync_tally.py, PL_COLLECTION)
+    # and the day carries Tally's Sales/Purchase Accounts as "books";
+    # days not re-synced since still have them inside profit_and_loss.
+    pl = report.get("books") or report.get("profit_and_loss") or {}
     before_gst = pl.get(books_key)
     known = isinstance(before_gst, (int, float))
 
