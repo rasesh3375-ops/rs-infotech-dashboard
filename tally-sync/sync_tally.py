@@ -332,7 +332,8 @@ def _fmt_date(d):
     return d.strftime("%Y%m%d")
 
 
-def _collection_request(collection_name, obj_type, fetch_fields, from_date, to_date, formulae=None, company=None):
+def _collection_request(collection_name, obj_type, fetch_fields, from_date, to_date, formulae=None, company=None,
+                        current_date=None):
     """Builds a TDL Collection export request. This is the reliable, structured
     way to pull voucher/ledger/stock-item data out of Tally -- Tally computes
     the collection from its own object model, rather than us scraping a
@@ -356,6 +357,7 @@ def _collection_request(collection_name, obj_type, fetch_fields, from_date, to_d
     get subtly wrong.
     """
     fetch_xml = "".join(f"<FETCH>{f}</FETCH>" for f in fetch_fields)
+    current_xml = f"\n    <SVCURRENTDATE>{_fmt_date(current_date)}</SVCURRENTDATE>" if current_date else ""
     formulae_xml = ""
     filter_xml = ""
     if formulae:
@@ -377,7 +379,7 @@ def _collection_request(collection_name, obj_type, fetch_fields, from_date, to_d
    <STATICVARIABLES>
     <SVCURRENTCOMPANY>{escape(company or TALLY_COMPANY_NAME)}</SVCURRENTCOMPANY>
     <SVFROMDATE>{_fmt_date(from_date)}</SVFROMDATE>
-    <SVTODATE>{_fmt_date(to_date)}</SVTODATE>
+    <SVTODATE>{_fmt_date(to_date)}</SVTODATE>{current_xml}
     <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
    </STATICVARIABLES>
    <TDL>
@@ -914,15 +916,31 @@ def run_import_serials():
     imported = dict(index.get("imported") or {})
     current_from = min((m for m in months), default="9999-99")
     total = 0
+    skipped_empty = []
     for name, start, end in companies:
-        try:
-            root = _post_xml(_collection_request("VchList", "Voucher", VOUCHER_FETCH_FIELDS + [field], start, start,
-                                                 company=name),
-                             dump_name=f"vouchers of {name}", timeout=300, max_attempts=1)
-        except TallyError as e:
-            print(f"{name}: Tally didn't answer -- {e}")
+        # The first run, on 9 Oct 2026, got no vouchers at all from any of
+        # the three: Tally hands a Voucher collection the vouchers of the
+        # Current Period, which was 1-Apr-26 to 31-Mar-27. So the company's
+        # own year is asked for -- as the period, then with the current
+        # date inside it too -- and if Tally still sends nothing, the
+        # owner sets the period in Tally (Alt+F2) and runs this again.
+        vouchers, failed = [], None
+        for current in (None, end):
+            try:
+                root = _post_xml(_collection_request("VchList", "Voucher", VOUCHER_FETCH_FIELDS + [field], start, end,
+                                                     company=name, current_date=current),
+                                 dump_name=f"vouchers of {name}", timeout=300, max_attempts=1)
+            except TallyError as e:
+                failed = e
+                break
+            vouchers = _collection_records(root, "VOUCHER")
+            if vouchers:
+                break
+        if failed:
+            print(f"{name}: Tally didn't answer -- {failed}")
             continue
-        vouchers = _collection_records(root, "VOUCHER")
+        if not vouchers:
+            skipped_empty.append((name, start, end))
         dates = [_tally_date_to_iso(_text(v, "DATE")) for v in vouchers]
         outside = [d for d in dates if not (start.isoformat() <= d <= end.isoformat())]
         if not vouchers or outside:
@@ -943,7 +961,16 @@ def run_import_serials():
         print(f"{name}: {len(vouchers)} vouchers, {count} item lines with a serial number imported.")
     col.document(SERIALS_DOC).set({**index, "months": months, "imported": imported,
                                    "from": min(months) if months else None, "as_of": _utc_now().isoformat()})
-    print(f"Done: {total} item lines from {len(companies)} earlier year(s). You can close those companies in Tally now.")
+    print(f"Done: {total} item lines from {len(companies) - len(skipped_empty)} of {len(companies)} earlier year(s).")
+    if skipped_empty:
+        print("\nTally sent no vouchers for: " + ", ".join(n for n, _, _ in skipped_empty) + ".\n"
+              "In Tally press Alt+F2 (Period) and set it to that year, run this again, and repeat for each year:")
+        for name, start, end in skipped_empty:
+            print(f"    {name}: From {start:%d-%m-%Y} To {end:%d-%m-%Y}")
+        print("Afterwards set the period back to the current year (Alt+F2: From 1-4-" + str(_fy_start(datetime.date.today()).year)
+              + " To 31-3-" + str(_fy_start(datetime.date.today()).year + 1) + ").")
+    else:
+        print("You can close those companies in Tally now.")
     return 0
 
 
