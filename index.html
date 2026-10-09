@@ -214,7 +214,13 @@
     padding:7px 10px; border-radius:8px; border:1px solid var(--panel-edge); background:var(--bg);
     color:var(--text); font-family:'Inter',sans-serif; font-size:13px;
   }
-  .view-label{ font-size:13px; color:var(--text-dim); margin:0 2px 8px; display:flex; align-items:center; gap:8px; }
+  .view-label{ font-size:13px; color:var(--text-dim); margin:0 2px 8px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  /* How many of a period's days are synced, beside "Showing: Yearly totals"
+     -- it used to be only in the grey footer, where the owner couldn't find
+     it on 9 Oct 2026 when he wanted to know whether 1 April to date was all
+     there. */
+  .view-label .days-ok{ color:#167a51; font-weight:600; }
+  .view-label .days-missing{ color:var(--red); font-weight:600; }
   .view-label .live-dot{
     width:7px; height:7px; border-radius:50%; background:var(--teal); display:inline-block;
     animation: pulse 1.6s ease-in-out infinite;
@@ -1644,6 +1650,13 @@ async function loadPeriodTotals(period, fromIso, toIso, token){
     renderTiles(total, 'in this ' + PL_PERIOD_LABELS[period]);
     document.getElementById('updatedNote').textContent = 'Totals of ' + (dates.length - missing) + ' synced day' +
       (dates.length - missing === 1 ? '' : 's') + (missing ? ' · ' + missing + ' day' + (missing === 1 ? '' : 's') + ' not synced yet' : '');
+    // The missing days by date, the first few, so they can be looked up.
+    const gaps = dates.filter((d, i) => !snaps[i].exists);
+    const shortDate = (d) => new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+    document.getElementById('viewLabel').innerHTML = 'Showing: ' + escapeHtml(PERIOD_TITLES[period]) + ' totals · ' + (gaps.length
+      ? '<span class="days-missing">⚠ ' + gaps.length + ' of ' + dates.length + ' days not synced: ' +
+        escapeHtml(gaps.slice(0, 6).map(shortDate).join(', ') + (gaps.length > 6 ? ' and ' + (gaps.length - 6) + ' more' : '')) + '</span>'
+      : '<span class="days-ok">✓ all ' + dates.length + ' days synced</span> (' + escapeHtml(shortDate(dates[0]) + ' – ' + shortDate(dates[dates.length - 1])) + ')');
   } catch (e){
     if (token !== viewToken) return;
     showStatus('Could not reach Firestore — check your internet connection.');
