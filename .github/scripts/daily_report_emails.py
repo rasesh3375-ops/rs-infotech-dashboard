@@ -1600,27 +1600,7 @@ def send(subject, text, html_body, attachments=()):
         s.send_message(msg)
 
 
-def _diag():
-    """TEMPORARY, read-only: the biggest debtors, as one annotation."""
-    snap = _db().collection(PERIOD_COLLECTION).document(PARTY_BALANCES_DOC).get()
-    doc = snap.to_dict() or {}
-    deb = doc.get("debtors") or {}
-    rows = [f"as_of={doc.get('as_of')} total={deb.get('total')} count={deb.get('count')}"]
-    today = datetime.datetime.now(IST).date()
-    for r in sorted(deb.get("parties") or [], key=lambda r: -(r.get("amount") or 0))[:12]:
-        bills = r.get("bills_list") or []
-        age = lambda b: (today - datetime.date.fromisoformat(b["date"])).days
-        oct1 = sum(b["amount"] for b in bills if b.get("date") == "2026-10-01")
-        over30 = sum(b["amount"] for b in bills if age(b) >= 30)
-        refs = ",".join(sorted({(b.get("ref") or "")[:6] for b in bills if b.get("date") == "2026-10-01"}))[:60]
-        rows.append(f"{r.get('name')} | {r.get('group')} | amt={r.get('amount')} | bills={len(bills)} "
-                    f"billsum={round(sum(b['amount'] for b in bills))} | 1oct={round(oct1)} [{refs}] | 30+={round(over30)} | oldest={r.get('oldest')}")
-    print("::warning::DIAG%0A" + "%0A".join(x.replace("%", "pct") for x in rows))
-
-
 def main():
-    if "--report=diag" in sys.argv:
-        return _diag()
     dry_run = "--dry-run" in sys.argv
     # Until the four secrets are added the scheduled run would fail every
     # day, and each failure is an email from GitHub; say what's missing
