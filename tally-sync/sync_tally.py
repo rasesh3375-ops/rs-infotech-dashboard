@@ -914,7 +914,7 @@ def run_import_serials():
     index = (before.to_dict() or {}) if before.exists else {}
     months = dict(index.get("months") or {})
     imported = dict(index.get("imported") or {})
-    current_from = min((m for m in months), default="9999-99")
+    current_fy = _fy_start(datetime.date.today()).isoformat()[:7]
     total = 0
     skipped_empty = []
     for name, start, end in companies:
@@ -948,13 +948,23 @@ def run_import_serials():
                   f"{start:%d %b %Y} to {end:%d %b %Y}.")
             continue
         by_month = _serial_lines(vouchers, type_parents)
-        count = 0
+        count = sum(len(lines) for lines in by_month.values())
+        # A company's year is read whole only while Tally's period is set to
+        # it; with the period on another year Tally still hands over a few
+        # of its vouchers. On 9 Oct 2026 such a read -- 32 vouchers of
+        # 2025-26, with the period on 2024-25 -- replaced months of the
+        # 11,709 lines read properly a minute before. So a read with fewer
+        # lines than the one already stored is never written.
+        before_lines = (imported.get(name) or {}).get("lines") or 0
+        if count < before_lines:
+            print(f"{name}: kept the earlier import ({before_lines} item lines) -- this read had only {count}, "
+                  f"because Tally's period isn't set to this year.")
+            continue
         for month, lines in sorted(by_month.items()):
-            if month >= current_from and month in months and month not in imported.get(name, {}).get("months", []):
-                continue   # a month the daily sync keeps -- never overwritten from here
+            if month >= current_fy:
+                continue   # the current year's months belong to the daily sync
             col.document(SERIALS_MONTH_PREFIX + month).set({"month": month, "lines": lines, "company": name})
             months[month] = len(lines)
-            count += len(lines)
         imported[name] = {"from": start.isoformat(), "to": end.isoformat(), "lines": count,
                           "months": sorted(by_month), "at": _utc_now().isoformat()}
         total += count
