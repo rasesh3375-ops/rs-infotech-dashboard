@@ -74,8 +74,11 @@ function signedIn_(idToken) {
     '/databases/(default)/documents/users/' + encodeURIComponent(user.localId), {
     headers: { Authorization: 'Bearer ' + idToken }, muteHttpExceptions: true });
   if (doc.getResponseCode() !== 200) return null;
-  const active = ((JSON.parse(doc.getContentText()).fields || {}).active || {}).booleanValue;
-  return active === true ? user.localId : null;
+  const fields = JSON.parse(doc.getContentText()).fields || {};
+  // A "Serial number search only" login (role 'serials') is active too, but may
+  // use nothing but the Replacement app's serial search -- not Ask.
+  const role = (fields.role || {}).stringValue || 'staff';
+  return (fields.active || {}).booleanValue === true && role === 'staff' ? user.localId : null;
 }
 
 function withinDailyLimit_(uid) {
