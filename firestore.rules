@@ -10,6 +10,11 @@ rules_version = '2';
 //  - a staff login is a users/{uid} document the owner made on the Users
 //    page, with active == true. Staff read everything except Profit & Loss,
 //    unless the owner ticked "Can see P&L" (pl == true);
+//  - a "serials" login (role == 'serials', made on the Users page as
+//    "Serial number search only") is for the Replacement app's Serial no.
+//    search: it may get the serial-number documents one by one and read
+//    nothing else -- no sales, debtors, stock or P&L, no listing, and it
+//    can't press Sync now;
 //  - any other login -- including one someone made for themselves -- reads
 //    nothing.
 // A day's P&L lives in daily_pl and a period's in period_reports under
@@ -20,7 +25,12 @@ service cloud.firestore {
     function signedIn() { return request.auth != null; }
     function isOwner() { return signedIn() && request.auth.token.email == 'rasesh3375@gmail.com'; }
     function memberDoc() { return /databases/$(database)/documents/users/$(request.auth.uid); }
-    function isStaff() { return signedIn() && exists(memberDoc()) && get(memberDoc()).data.active == true; }
+    function isActive() { return signedIn() && exists(memberDoc()) && get(memberDoc()).data.active == true; }
+    // Logins made before roles existed have none, and are staff.
+    function role() { return get(memberDoc()).data.get('role', 'staff'); }
+    function isStaff() { return isActive() && role() == 'staff'; }
+    function isSerialsOnly() { return isActive() && role() == 'serials'; }
+    function isSerialDoc(id) { return id == 'serials_index' || id.matches('serials_[0-9]{4}-[0-9]{2}'); }
     function canRead() { return isOwner() || isStaff(); }
     function canSeePL() { return isOwner() || (isStaff() && get(memberDoc()).data.pl == true); }
     function isPLDoc(id) { return id.matches('(weekly|monthly|quarterly|half_yearly|yearly)_[0-9-]+'); }
@@ -30,6 +40,7 @@ service cloud.firestore {
     match /delivery_challans/{id} { allow read: if canRead(); }
     match /period_reports/{id} {
       allow read: if (isPLDoc(id) && canSeePL()) || (!isPLDoc(id) && canRead());
+      allow get: if isSerialDoc(id) && isSerialsOnly();
     }
     match /sync_control/{id} {
       allow read: if canRead();

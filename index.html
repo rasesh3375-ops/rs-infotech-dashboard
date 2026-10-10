@@ -168,6 +168,8 @@
   .users-fields label{ display:flex; flex-direction:column; font-size:12px; color:var(--text-dim); gap:3px; }
   .users-fields input{ font:inherit; font-size:14px; padding:7px 9px; border:1px solid var(--panel-edge); border-radius:8px; background:var(--bg); color:var(--text); }
   .users-check{ display:inline-flex; gap:6px; align-items:center; font-size:13.5px; margin:10px 0 0; }
+  .users-role{ display:flex; flex-direction:column; font-size:12px; color:var(--text-dim); gap:3px; margin:10px 0 0; max-width:420px; }
+  .users-role select{ font:inherit; font-size:14px; padding:7px 9px; border:1px solid var(--panel-edge); border-radius:8px; background:var(--bg); color:var(--text); }
   .users-add-row{ display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap; }
   .users-msg{ font-size:13px; }
   .users-msg.err{ color:var(--red); }
@@ -751,7 +753,7 @@
 <div id="usersOverlay" class="users-overlay" hidden>
   <div class="users-box" role="dialog" aria-label="Users">
     <div class="users-head"><h2>Users</h2><button type="button" class="gr-close" id="usersClose">✕ Close</button></div>
-    <div class="users-note">Staff see everything except Profit &amp; Loss, unless you tick "Can see P&amp;L". The database itself refuses them what they aren't allowed — it isn't only hidden.</div>
+    <div class="users-note">Staff see everything except Profit &amp; Loss, unless given "Staff + Profit &amp; Loss". A "Serial number search only" login sees nothing but the serial numbers, in the Replacement app, and can't open this dashboard. The database itself refuses each login what it isn't allowed — it isn't only hidden.</div>
     <div class="users-warn" id="usersWarn" hidden></div>
     <table class="users-table">
       <thead><tr><th>Name</th><th>Access</th><th>Last opened</th><th></th></tr></thead>
@@ -762,9 +764,15 @@
       <div class="users-fields">
         <label>Name<input id="uaName" required maxlength="60" placeholder="e.g. Samarth Patel"></label>
         <label>Email<input id="uaEmail" type="email" required placeholder="e.g. accounts@rsinfotech.net"></label>
-        <label>Password<input id="uaPassword" type="text" required minlength="8" placeholder="at least 8 characters"></label>
+        <label>Password<input id="uaPassword" type="text" required minlength="10" placeholder="10+ characters, letters and numbers"></label>
       </div>
-      <label class="users-check"><input type="checkbox" id="uaPl"> Can see Profit &amp; Loss</label>
+      <label class="users-role">Access
+        <select id="uaRole">
+          <option value="staff">Staff: everything except Profit &amp; Loss</option>
+          <option value="staff_pl">Staff + Profit &amp; Loss</option>
+          <option value="serials">Serial number search only (Replacement app)</option>
+        </select>
+      </label>
       <div class="users-add-row"><button type="submit" class="ctrl-btn lock-on" id="uaSubmit">Add login</button><span class="users-msg" id="uaMsg"></span></div>
       <div class="users-hint">Tell them the email and password yourself. They can change the password with "Forgot password?" on the sign-in screen.</div>
     </form>
@@ -2556,11 +2564,11 @@ function renderUsers(rows){
   const own = `<tr><td><b>Rasesh Doshi</b> (you)<div class="em">${escapeHtml(OWNER_EMAIL)}</div></td><td>Owner · everything</td><td>–</td><td></td></tr>`;
   body.innerHTML = own + rows.map(u => `<tr>
       <td><b>${escapeHtml(u.name || '')}</b><div class="em">${escapeHtml(u.email || '')}</div></td>
-      <td>${u.active ? (u.pl ? 'Staff + P&amp;L' : 'Staff') : '<span class="off">Removed</span>'}</td>
+      <td>${!u.active ? '<span class="off">Removed</span>' : u.role === 'serials' ? 'Serial search only' : u.pl ? 'Staff + P&amp;L' : 'Staff'}</td>
       <td>${escapeHtml(tsText(u.last_seen))}</td>
       <td><div class="users-acts" data-uid="${gsAttr(u.id)}" data-email="${gsAttr(u.email || '')}">` +
       (u.active
-        ? `<button type="button" data-act="pl">${u.pl ? 'Hide P&amp;L' : 'Show P&amp;L'}</button>` +
+        ? (u.role === 'serials' ? '' : `<button type="button" data-act="pl">${u.pl ? 'Hide P&amp;L' : 'Show P&amp;L'}</button>`) +
           `<button type="button" data-act="reset">Send password reset</button>` +
           `<button type="button" data-act="remove" class="danger">Remove</button>`
         : `<button type="button" data-act="restore">Give access again</button>`) +
@@ -2614,6 +2622,7 @@ document.getElementById('usersBody').addEventListener('click', async (e) => {
       usersMsg(email + ' has access again.', 'ok');
     } else if (act === 'pl'){
       const snap = await ref.get();
+      if ((snap.data() || {}).role === 'serials') return;
       await ref.update({ pl: !(snap.data() || {}).pl });
     }
   } catch (err){
@@ -2627,9 +2636,14 @@ document.getElementById('usersAdd').addEventListener('submit', async (e) => {
   const name = document.getElementById('uaName').value.trim();
   const email = document.getElementById('uaEmail').value.trim().toLowerCase();
   const password = document.getElementById('uaPassword').value;
-  const pl = document.getElementById('uaPl').checked;
+  const role = document.getElementById('uaRole').value;
+  const pl = role === 'staff_pl';
   const btn = document.getElementById('uaSubmit');
-  if (password.length < 8){ usersMsg('The password needs at least 8 characters.', 'err'); return; }
+  // A serial-only login is typed on shared office phones and PCs, so every
+  // new login gets a password that isn't trivial to guess.
+  if (password.length < 10 || !/[a-z]/i.test(password) || !/\d/.test(password)){
+    usersMsg('The password needs at least 10 characters, with letters and numbers.', 'err'); return;
+  }
   if (email === OWNER_EMAIL){ usersMsg("That's your own login.", 'err'); return; }
   btn.disabled = true;
   usersMsg('Adding…');
@@ -2652,10 +2666,10 @@ document.getElementById('usersAdd').addEventListener('submit', async (e) => {
     const uid = cred.user.uid;
     await second.auth().signOut();
     await db.collection(USERS_COLLECTION).doc(uid).set({
-      name, email, pl, active: true,
+      name, email, pl, active: true, role: role === 'serials' ? 'serials' : 'staff',
       created_at: firebase.firestore.FieldValue.serverTimestamp(), created_by: (auth.currentUser || {}).email || '',
     });
-    usersMsg(name + ' can now sign in with ' + email + '.', 'ok');
+    usersMsg(name + ' can now sign in with ' + email + (role === 'serials' ? ' — in the Replacement app\'s Serial no. search only.' : '.'), 'ok');
     document.getElementById('usersAdd').reset();
   } catch (err){
     console.error(err);
@@ -2686,7 +2700,12 @@ function resolveAccess(user){
     let first = true;
     accessUnsubscribe = db.collection(USERS_COLLECTION).doc(user.uid).onSnapshot((doc) => {
       const d = doc.exists ? doc.data() : null;
-      const a = { owner: false, pl: !!(d && d.active && d.pl), uid: user.uid, staff: !!(d && d.active), name: d && d.name };
+      // A "serials" login exists only for the Replacement app's Serial no.
+      // search: the database rules give it the serial lines and nothing
+      // else, and here it gets no dashboard at all.
+      const serialsOnly = !!(d && d.active && d.role === 'serials');
+      const a = { owner: false, pl: !!(d && d.active && d.pl && !serialsOnly), uid: user.uid,
+                  staff: !!(d && d.active) && !serialsOnly, serialsOnly, name: d && d.name };
       if (first){ first = false; resolve(a); return; }
       if (!a.staff){ auth.signOut(); return; }
       access = a;
@@ -2704,6 +2723,9 @@ auth.onAuthStateChanged(async (user) => {
   if (user){
     access = await resolveAccess(user);
     if (!access.owner && !access.staff){
+      document.getElementById('noAccessSub').textContent = access.serialsOnly
+        ? 'This login is only for the Serial no. search in the Replacement app. It can\'t open the dashboard.'
+        : 'This login hasn\'t been given access to the dashboard. Ask Rasesh to add you on the Users page.';
       showScreen('noAccess');
       return;
     }
