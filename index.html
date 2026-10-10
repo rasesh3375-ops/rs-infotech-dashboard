@@ -2647,6 +2647,18 @@ document.getElementById('usersAdd').addEventListener('submit', async (e) => {
   if (email === OWNER_EMAIL){ usersMsg("That's your own login.", 'err'); return; }
   btn.disabled = true;
   usersMsg('Adding…');
+  if (role === 'serials'){
+    // Under the rules before this login type, an active login with any role
+    // reads as staff -- sales, debtors, stock -- so one is only made once
+    // the rules that limit it to the serial numbers are published.
+    try { await db.collection('rules_check').doc('serials-v1').get(); }
+    catch (err){
+      console.error(err);
+      usersMsg('First publish the new database rules (step 1 of the setup) — until then a serial-only login would see the whole dashboard.', 'err');
+      btn.disabled = false;
+      return;
+    }
+  }
   const ref = db.collection(USERS_COLLECTION).doc();
   try {
     // The access document is checked first, so a login is never made that

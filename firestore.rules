@@ -48,6 +48,10 @@ service cloud.firestore {
       allow write: if id == 'request' && canRead()
         && request.resource.data.keys().hasOnly(['request_id', 'requested_at', 'requested_by']);
     }
+    // Nothing is stored here. The Users page reads this before it makes a
+    // serials login: the old rules have no such match and refuse it, and
+    // under them a serials login would count as staff and see everything.
+    match /rules_check/{id} { allow get: if isOwner() && id == 'serials-v1'; }
     match /users/{uid} {
       allow read: if isOwner() || (signedIn() && request.auth.uid == uid);
       allow create, delete: if isOwner();
